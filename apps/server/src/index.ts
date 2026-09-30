@@ -57,7 +57,7 @@ async function main(): Promise<void> {
   const banner = [
     "",
     "  Bullpane " + app.ctx.version,
-    `  edition : ${edition.tier}${edition.demo ? " (demo)" : ""}${edition.license ? ` — licensed to ${edition.license.licensee}` : ""}`,
+    `  edition : ${edition.tier}${edition.demo ? " (demo)" : ""}${edition.license ? ` — licensed to ${edition.license.licensee}` : ""}${config.unlockedFeatures.length ? ` — unlocked: ${config.unlockedFeatures.join(", ")}` : ""}`,
     `  auth    : ${authSummary(edition.features.users, config.basicAuth !== null)}`,
     `  url     : ${config.publicUrl}  (listening on ${config.host}:${config.port})`,
     `  web ui  : ${config.webDist}`,

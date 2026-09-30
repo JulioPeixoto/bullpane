@@ -109,6 +109,26 @@ describe("loadConfig basic auth", () => {
   });
 });
 
+describe("loadConfig unlocked features", () => {
+  const base = { SESSION_SECRET: "x".repeat(40) };
+  const quiet = { warn: () => undefined };
+
+  it("unlocks nothing by default", () => {
+    expect(loadConfig(base, quiet).unlockedFeatures).toEqual([]);
+  });
+
+  it("reads a comma-separated list, tolerating spaces and repeats", () => {
+    const cfg = loadConfig({ ...base, BULLPANE_UNLOCKED_FEATURES: " alerts, audit,,alerts " }, quiet);
+    expect(cfg.unlockedFeatures).toEqual(["alerts", "audit"]);
+  });
+
+  it("refuses to boot on an unknown name, instead of leaving it locked", () => {
+    expect(() => loadConfig({ ...base, BULLPANE_UNLOCKED_FEATURES: "alerts,alert" }, quiet)).toThrow(
+      /BULLPANE_UNLOCKED_FEATURES: unknown feature "alert"/,
+    );
+  });
+});
+
 describe("splitStatements", () => {
   it("splits on ;\\n, drops comments and blanks", () => {
     const sql = "-- header\nCREATE TABLE a (\n  x INT\n);\n\nCREATE TABLE b (y INT);\n-- trailing\n";

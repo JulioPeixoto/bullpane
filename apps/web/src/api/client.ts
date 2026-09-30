@@ -37,7 +37,8 @@ export function errorMessage(e: unknown, fallback = "Something went wrong"): str
 export interface ApiHandlers {
   onUnauthenticated: () => void;
   onProRequired: (feature: ProFeature | undefined) => void;
-  onDemoLocked: (message: string) => void;
+  /** 423: the public demo (`demo_locked`) or BULLPANE_READ_ONLY (`read_only`); the server says which. */
+  onLocked: (message: string) => void;
 }
 
 const handlers: Partial<ApiHandlers> = {};
@@ -139,7 +140,7 @@ function dispatch(err: ApiRequestError) {
       handlers.onProRequired?.(err.body.feature);
       break;
     case 423:
-      handlers.onDemoLocked?.(err.body.message);
+      handlers.onLocked?.(err.body.message);
       break;
     default:
       break;
