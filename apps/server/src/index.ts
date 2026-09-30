@@ -45,7 +45,7 @@ async function main(): Promise<void> {
    * container (loopback would make it unreachable), so the honest thing is to
    * say so loudly at boot instead of quietly changing the bind.
    */
-  const openInstance = !edition.features.users && !config.demoMode;
+  const openInstance = !edition.features.users && !config.demoMode && !config.basicAuth;
   if (openInstance && config.host !== "127.0.0.1" && config.host !== "localhost") {
     log.warn(
       { host: config.host, port: config.port },
@@ -58,7 +58,7 @@ async function main(): Promise<void> {
     "",
     "  Bullpane " + app.ctx.version,
     `  edition : ${edition.tier}${edition.demo ? " (demo)" : ""}${edition.license ? ` — licensed to ${edition.license.licensee}` : ""}`,
-    `  auth    : ${edition.features.users ? "login required" : "OPEN — no login (free edition)"}`,
+    `  auth    : ${authSummary(edition.features.users, config.basicAuth !== null)}`,
     `  url     : ${config.publicUrl}  (listening on ${config.host}:${config.port})`,
     `  web ui  : ${config.webDist}`,
     `  mysql   : ${redactUrl(config.databaseUrl)}`,
@@ -87,6 +87,11 @@ async function main(): Promise<void> {
   };
   process.on("SIGINT", () => void shutdown("SIGINT"));
   process.on("SIGTERM", () => void shutdown("SIGTERM"));
+}
+
+function authSummary(users: boolean, basicAuth: boolean): string {
+  if (users) return basicAuth ? "login required, behind HTTP Basic auth" : "login required";
+  return basicAuth ? "HTTP Basic auth (BULLPANE_BASIC_AUTH_*)" : "OPEN — no login (free edition)";
 }
 
 function redactUrl(url: string): string {

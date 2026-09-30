@@ -70,6 +70,45 @@ describe("loadConfig", () => {
   });
 });
 
+describe("loadConfig basic auth", () => {
+  const base = { SESSION_SECRET: "x".repeat(40) };
+  const quiet = { warn: () => undefined };
+
+  it("is off when neither variable is set", () => {
+    expect(loadConfig(base, quiet).basicAuth).toBeNull();
+  });
+
+  it("reads both variables", () => {
+    const cfg = loadConfig(
+      { ...base, BULLPANE_BASIC_AUTH_USER: "ops", BULLPANE_BASIC_AUTH_PASSWORD: "p".repeat(24) },
+      quiet,
+    );
+    expect(cfg.basicAuth).toEqual({ user: "ops", password: "p".repeat(24) });
+  });
+
+  it("refuses to boot with only one of them, instead of staying open", () => {
+    expect(() => loadConfig({ ...base, BULLPANE_BASIC_AUTH_USER: "ops" }, quiet)).toThrow(/must be set together/);
+    expect(() => loadConfig({ ...base, BULLPANE_BASIC_AUTH_PASSWORD: "p".repeat(24) }, quiet)).toThrow(
+      /must be set together/,
+    );
+  });
+
+  it("refuses a user with a colon, which Basic auth cannot carry", () => {
+    expect(() =>
+      loadConfig({ ...base, BULLPANE_BASIC_AUTH_USER: "a:b", BULLPANE_BASIC_AUTH_PASSWORD: "p".repeat(24) }, quiet),
+    ).toThrow(/BULLPANE_BASIC_AUTH_USER/);
+  });
+
+  it("warns about a short password", () => {
+    const warnings: string[] = [];
+    loadConfig(
+      { ...base, BULLPANE_BASIC_AUTH_USER: "ops", BULLPANE_BASIC_AUTH_PASSWORD: "short" },
+      { warn: (m) => warnings.push(m) },
+    );
+    expect(warnings.join(" ")).toMatch(/BULLPANE_BASIC_AUTH_PASSWORD/);
+  });
+});
+
 describe("splitStatements", () => {
   it("splits on ;\\n, drops comments and blanks", () => {
     const sql = "-- header\nCREATE TABLE a (\n  x INT\n);\n\nCREATE TABLE b (y INT);\n-- trailing\n";
