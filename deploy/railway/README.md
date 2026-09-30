@@ -15,14 +15,22 @@ tables on boot.
 
 ## 2. The dashboard
 
-**New → GitHub Repo →** this repository. `railway.json` at the root makes
-Railway build `deploy/railway/Dockerfile` (see its header for why not the root
-one) and wait for `GET /api/health` before switching traffic.
+**New → GitHub Repo →** this repository.
+
+No `railway.json` on purpose: Railway stops reading Config as Code files on
+2026-12-01, and without it the build would fall back to the root Dockerfile,
+which ends on the simulator. The two settings below live on the service instead:
+
+- Variable `RAILWAY_DOCKERFILE_PATH` = `deploy/railway/Dockerfile` (see its
+  header for why not the root one).
+- **Settings → Deploy → Healthcheck Path** = `/api/health`, so a deploy only
+  takes traffic once MySQL is reachable and migrations ran.
 
 Variables, with `MySQL` and `Redis` being your services' names:
 
 | Variable | Value | Why |
 |---|---|---|
+| `RAILWAY_DOCKERFILE_PATH` | `deploy/railway/Dockerfile` | Build the dashboard, not the simulator |
 | `DATABASE_URL` | `${{MySQL.MYSQL_URL}}` | Private network, no egress |
 | `BULLPANE_BASIC_AUTH_USER` | e.g. `ops` | Without both of these the dashboard is open to anyone with the URL |
 | `BULLPANE_BASIC_AUTH_PASSWORD` | 32+ random characters | |
