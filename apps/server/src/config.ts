@@ -6,6 +6,7 @@ import { randomBytes } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { type CreateConnectionInput, createConnectionSchema } from "@bullpane/shared";
+import type { BasicAuthCredentials } from "./auth/basic";
 
 /** apps/server (the package root), resolved from src/ or dist/ alike. */
 export const SERVER_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -43,6 +44,13 @@ export interface Config {
    * Meant for pointing the dashboard at production before you trust it.
    */
   readOnly: boolean;
+  /**
+   * BULLPANE_BASIC_AUTH_USER + BULLPANE_BASIC_AUTH_PASSWORD: HTTP Basic auth in
+   * front of the whole server (see auth/basic.ts). null when neither is set.
+   * Setting only one of them is a boot error: a half-configured lock would
+   * otherwise leave the dashboard open while the operator believes it is shut.
+   */
+  basicAuth: BasicAuthCredentials | null;
   /**
    * BULLPANE_CONNECTIONS: a JSON array of connections created at boot when no
    * connection of that name exists yet, e.g.
@@ -132,6 +140,20 @@ function connections(env: NodeJS.ProcessEnv, key: string): CreateConnectionInput
   });
 }
 
+function basicAuth(env: NodeJS.ProcessEnv, warn: (message: string) => void): BasicAuthCredentials | null {
+  const user = optional(env, "BULLPANE_BASIC_AUTH_USER");
+  const password = optional(env, "BULLPANE_BASIC_AUTH_PASSWORD");
+  if (!user && !password) return null;
+  if (!user || !password) {
+    throw new Error("BULLPANE_BASIC_AUTH_USER and BULLPANE_BASIC_AUTH_PASSWORD must be set together");
+  }
+  if (user.includes(":")) throw new Error("Invalid BULLPANE_BASIC_AUTH_USER: cannot contain ':'");
+  if (password.length < 16) {
+    warn("BULLPANE_BASIC_AUTH_PASSWORD is shorter than 16 characters. Use a longer random string.");
+  }
+  return { user, password };
+}
+
 export interface LoadConfigOptions {
   /** where warnings go (default console.warn) */
   warn?: (message: string) => void;
@@ -197,6 +219,7 @@ export function loadConfig(rawEnv: NodeJS.ProcessEnv = process.env, opts: LoadCo
     demoMode,
     allowPasswordLogin: bool(env, "BULLPANE_ALLOW_PASSWORD_LOGIN", false),
     readOnly: bool(env, "BULLPANE_READ_ONLY", false),
+    basicAuth: basicAuth(env, warn),
     seedConnections: connections(env, "BULLPANE_CONNECTIONS"),
     demoRedisUrl: str(env, "DEMO_REDIS_URL", "redis://localhost:6379"),
     demoAdminEmail: str(env, "DEMO_ADMIN_EMAIL", "demo@bullpane.com"),

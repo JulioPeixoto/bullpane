@@ -7,6 +7,7 @@ Ways to run Bullpane in production. Pick one.
 | **EC2 + Docker** (`install-ec2.sh`) | One box, the fastest way to start | ~USD 15/month |
 | **ECS Fargate** (`ecs/`) | You already run ECS and want it managed | ~USD 33/month with an ALB |
 | **Docker Compose** (repo root) | Local, or a server you already have | — |
+| **Railway** (`railway/`) | Your Redis already lives on Railway | MySQL + one small service |
 
 In every case the dashboard needs:
 

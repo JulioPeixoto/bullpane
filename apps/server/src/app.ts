@@ -11,6 +11,7 @@ import fastifyStatic from "@fastify/static";
 import type { InspectorPool } from "@bullpane/redis-inspector";
 import Fastify, { type FastifyInstance, type FastifyServerOptions, LogController } from "fastify";
 import { AlertsEngine } from "./alerts/engine";
+import { basicAuthHook } from "./auth/basic";
 import { SessionService } from "./auth/sessions";
 import { type Config, SERVER_ROOT } from "./config";
 import type { AppContext } from "./context";
@@ -100,6 +101,8 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
     version,
   };
   app.decorate("ctx", ctx);
+
+  if (config.basicAuth) app.addHook("onRequest", basicAuthHook(config.basicAuth));
 
   await app.register(fastifyCookie, { secret: config.sessionSecret, hook: "onRequest" });
   registerErrorHandling(app);
