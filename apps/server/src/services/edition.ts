@@ -58,8 +58,8 @@ export type ResolvedLicense =
   | { source: "online"; key: string; state: OnlineState; verification: LicenseVerification }
   | null;
 
-function features(enabled: boolean): Record<ProFeature, boolean> {
-  return Object.fromEntries(PRO_FEATURES.map((f) => [f, enabled])) as Record<ProFeature, boolean>;
+function features(pro: boolean, unlocked: readonly ProFeature[]): Record<ProFeature, boolean> {
+  return Object.fromEntries(PRO_FEATURES.map((f) => [f, pro || unlocked.includes(f)])) as Record<ProFeature, boolean>;
 }
 
 function statusFromVerification(v: LicenseVerification): LicenseStatus {
@@ -110,13 +110,16 @@ export function licenseInfo(resolved: ResolvedLicense): LicenseInfo | null {
   };
 }
 
-export function buildEdition(config: Pick<Config, "demoMode" | "checkoutUrl">, resolved: ResolvedLicense): Edition {
+export function buildEdition(
+  config: Pick<Config, "demoMode" | "checkoutUrl"> & Partial<Pick<Config, "unlockedFeatures">>,
+  resolved: ResolvedLicense,
+): Edition {
   const license = licenseInfo(resolved);
   const pro = config.demoMode || license?.valid === true;
   return {
     tier: pro ? "pro" : "free",
     demo: config.demoMode,
-    features: features(pro),
+    features: features(pro, config.unlockedFeatures ?? []),
     license,
     pricing: { ...PRO_PRICING },
     checkoutUrl: config.checkoutUrl,

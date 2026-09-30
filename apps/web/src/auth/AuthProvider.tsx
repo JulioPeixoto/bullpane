@@ -123,7 +123,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         }
       },
       onProRequired: (feature) => openUpsell(feature),
-      onDemoLocked: () => toast.warning("This action is locked in the demo"),
+      onLocked: (message) => toast.warning(message),
     });
   }, [navigate, qc]);
 

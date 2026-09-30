@@ -5,7 +5,7 @@
 import { randomBytes } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { type CreateConnectionInput, createConnectionSchema } from "@bullpane/shared";
+import { type CreateConnectionInput, createConnectionSchema, PRO_FEATURES, type ProFeature } from "@bullpane/shared";
 import type { BasicAuthCredentials } from "./auth/basic";
 
 /** apps/server (the package root), resolved from src/ or dist/ alike. */
@@ -51,6 +51,14 @@ export interface Config {
    * otherwise leave the dashboard open while the operator believes it is shut.
    */
   basicAuth: BasicAuthCredentials | null;
+  /**
+   * BULLPANE_UNLOCKED_FEATURES: comma-separated Pro features turned on without a
+   * license key, e.g. `alerts,folders,flows,audit`. The edition stays "free";
+   * only these features open. Unlocking `users` makes login mandatory, exactly
+   * as a key would. An unknown name is a boot error, so a typo cannot silently
+   * leave a feature locked.
+   */
+  unlockedFeatures: ProFeature[];
   /**
    * BULLPANE_CONNECTIONS: a JSON array of connections created at boot when no
    * connection of that name exists yet, e.g.
@@ -140,6 +148,22 @@ function connections(env: NodeJS.ProcessEnv, key: string): CreateConnectionInput
   });
 }
 
+function unlockedFeatures(env: NodeJS.ProcessEnv, key: string): ProFeature[] {
+  const raw = optional(env, key);
+  if (!raw) return [];
+  const known: readonly string[] = PRO_FEATURES;
+  const names = raw
+    .split(",")
+    .map((name) => name.trim())
+    .filter(Boolean);
+  for (const name of names) {
+    if (!known.includes(name)) {
+      throw new Error(`Invalid ${key}: unknown feature "${name}". Expected any of: ${PRO_FEATURES.join(", ")}`);
+    }
+  }
+  return [...new Set(names)] as ProFeature[];
+}
+
 function basicAuth(env: NodeJS.ProcessEnv, warn: (message: string) => void): BasicAuthCredentials | null {
   const user = optional(env, "BULLPANE_BASIC_AUTH_USER");
   const password = optional(env, "BULLPANE_BASIC_AUTH_PASSWORD");
@@ -220,6 +244,7 @@ export function loadConfig(rawEnv: NodeJS.ProcessEnv = process.env, opts: LoadCo
     allowPasswordLogin: bool(env, "BULLPANE_ALLOW_PASSWORD_LOGIN", false),
     readOnly: bool(env, "BULLPANE_READ_ONLY", false),
     basicAuth: basicAuth(env, warn),
+    unlockedFeatures: unlockedFeatures(env, "BULLPANE_UNLOCKED_FEATURES"),
     seedConnections: connections(env, "BULLPANE_CONNECTIONS"),
     demoRedisUrl: str(env, "DEMO_REDIS_URL", "redis://localhost:6379"),
     demoAdminEmail: str(env, "DEMO_ADMIN_EMAIL", "demo@bullpane.com"),

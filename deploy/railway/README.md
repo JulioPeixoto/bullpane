@@ -37,6 +37,7 @@ Variables, with `MySQL` and `Redis` being your services' names:
 | `BULLPANE_READ_ONLY` | `true` | Start read-only (`docs/PRODUCTION-TRIAL.md`) |
 | `BULLPANE_CONNECTIONS` | `[{"name":"Production","url":"${{Redis.REDIS_URL}}?family=0","prefix":"bull"}]` | Seeds the connection at boot, no click needed |
 | `PUBLIC_URL` | `https://${{RAILWAY_PUBLIC_DOMAIN}}` | Used in alert links |
+| `BULLPANE_UNLOCKED_FEATURES` | e.g. `alerts,folders,flows,audit` | Optional. Leave `users` out to keep Basic auth as the only login |
 
 - `?family=0` lets ioredis resolve the private hostname over IPv4 or IPv6;
   Railway's private DNS may answer IPv6 only, and ioredis looks up IPv4 by default.

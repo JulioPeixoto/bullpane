@@ -119,6 +119,21 @@ describe("buildEdition", () => {
     expect(e.license?.status).toBe("expired");
   });
 
+  it("opens only the unlocked features and stays free", () => {
+    const e = buildEdition({ ...config, unlockedFeatures: ["alerts", "audit"] }, null);
+    expect(e.tier).toBe("free");
+    expect(e.license).toBeNull();
+    expect(e.features).toEqual({ ...allFeatures(false), alerts: true, audit: true });
+  });
+
+  it("does not narrow a valid license", () => {
+    const e = buildEdition(
+      { ...config, unlockedFeatures: ["alerts"] },
+      offline({ valid: true, payload: basePayload, reason: null }),
+    );
+    expect(e.features).toEqual(allFeatures(true));
+  });
+
   it("is pro + demo badge in DEMO_MODE regardless of license", () => {
     const e = buildEdition({ ...config, demoMode: true }, null);
     expect(e.tier).toBe("pro");
