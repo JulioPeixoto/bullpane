@@ -50,11 +50,15 @@ export class SimContext {
     return redisOptionsFromUrl(this.config.redisUrl);
   }
 
-  /** Default job options every producer starts from. Keeps Redis bounded. */
+  /**
+   * Default job options every producer starts from. Keeps Redis bounded, and
+   * keeps fewer failed than completed: left running for hours, a 1000-failed /
+   * 500-completed cap made every queue on the public demo look broken.
+   */
   get defaultJobOptions(): JobsOptions {
     return {
-      removeOnComplete: { count: 500 },
-      removeOnFail: { count: 1000 },
+      removeOnComplete: { count: 1000 },
+      removeOnFail: { count: 200 },
     };
   }
 
