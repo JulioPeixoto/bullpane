@@ -61,7 +61,7 @@ const LICENSE = {
 
 function deps(fetchImpl: typeof fetch, extra: Partial<Deps> = {}): Deps {
   return {
-    store: new CreemClient({ base: "https://creem.test", apiKey: API_KEY, fetchImpl }),
+    store: new CreemClient({ base: "https://creem.test", apiKey: API_KEY, fetchImpl, now: () => NOW }),
     now: () => NOW,
     privateKey,
     leaseDays: 7,
