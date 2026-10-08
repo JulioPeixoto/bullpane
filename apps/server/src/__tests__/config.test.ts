@@ -1,6 +1,6 @@
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { DEFAULT_DATABASE_URL, loadConfig, SERVER_ROOT } from "../config";
+import { DEFAULT_DATA_DIR, loadConfig, SERVER_ROOT } from "../config";
 import { splitStatements } from "../db/migrate";
 import { pageToRange } from "../routes/jobs";
 
@@ -33,7 +33,7 @@ describe("loadConfig", () => {
     expect(cfg.port).toBe(3000);
     expect(cfg.host).toBe("0.0.0.0");
     expect(cfg.publicUrl).toBe("http://localhost:3000");
-    expect(cfg.databaseUrl).toBe(DEFAULT_DATABASE_URL);
+    expect(cfg.database).toEqual({ dialect: "sqlite", path: path.join(DEFAULT_DATA_DIR, "bullpane.db") });
     expect(cfg.licenseKey).toBeNull();
     expect(cfg.checkoutUrl).toBe("https://bullpane.com/#pricing");
     expect(cfg.licenseApiUrl).toBe("https://api.bullpane.com");
@@ -126,6 +126,47 @@ describe("loadConfig unlocked features", () => {
     expect(() => loadConfig({ ...base, BULLPANE_UNLOCKED_FEATURES: "alerts,alert" }, quiet)).toThrow(
       /BULLPANE_UNLOCKED_FEATURES: unknown feature "alert"/,
     );
+  });
+});
+
+describe("database selection", () => {
+  const load = (env: Record<string, string>) => loadConfig({ SESSION_SECRET: "x".repeat(40), ...env }, { warn: () => undefined });
+
+  it("uses SQLite in BULLPANE_DATA_DIR when DATABASE_URL is unset or blank", () => {
+    expect(load({ BULLPANE_DATA_DIR: "/data" }).database).toEqual({ dialect: "sqlite", path: "/data/bullpane.db" });
+    expect(load({ DATABASE_URL: "  ", BULLPANE_DATA_DIR: "/data" }).database).toEqual({
+      dialect: "sqlite",
+      path: "/data/bullpane.db",
+    });
+  });
+
+  it("keeps MySQL for an install that set DATABASE_URL", () => {
+    const url = "mysql://bullpane:secret@db:3306/bullpane";
+    expect(load({ DATABASE_URL: url }).database).toEqual({ dialect: "mysql", url });
+    expect(load({ DATABASE_URL: "mysql2://u:p@h/db" }).database.dialect).toBe("mysql");
+  });
+
+  it("accepts an explicit SQLite file", () => {
+    expect(load({ DATABASE_URL: "file:/var/lib/bullpane/x.db" }).database).toEqual({
+      dialect: "sqlite",
+      path: "/var/lib/bullpane/x.db",
+    });
+    expect(load({ DATABASE_URL: "file:///var/lib/bullpane/x.db" }).database).toEqual({
+      dialect: "sqlite",
+      path: "/var/lib/bullpane/x.db",
+    });
+    expect(load({ DATABASE_URL: "sqlite:rel.db" }).database).toEqual({ dialect: "sqlite", path: path.resolve("rel.db") });
+  });
+
+  it("refuses anything else instead of guessing, without echoing the URL", () => {
+    let message = "";
+    try {
+      load({ DATABASE_URL: "postgres://u:hunter2@h/db" });
+    } catch (err) {
+      message = (err as Error).message;
+    }
+    expect(message).toMatch(/Invalid DATABASE_URL/);
+    expect(message).not.toMatch(/hunter2/);
   });
 });
 

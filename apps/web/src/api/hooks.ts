@@ -15,6 +15,10 @@ import type {
   AttentionThresholds,
   BulkJobAction,
   BulkJobActionResult,
+  PromoteJobResult,
+  PromoteMatchingInput,
+  PromoteMatchingResult,
+  SchedulerPromoteMode,
   AuditAction,
   AuditPage,
   ConnectionHealth,
@@ -29,9 +33,12 @@ import type {
   Edition,
   FlowEdge,
   FlowGraph,
+  FlowMap,
+  FlowMapsResponse,
+  AddFlowMapNodeInput,
   Folder,
   DiscoveryStatus,
-  GroupsPage,
+  GroupsResponse,
   HiddenQueue,
   JobDetail,
   JobSearchResult,
@@ -50,19 +57,30 @@ import type {
   SsoSettingsInput,
   SsoTestResult,
   UpdateSsoProviderInput,
-  RedisServerInfo,
+  ServerInfo,
   SetupStatus,
   UpdateConnectionInput,
   UpdateUserInput,
   User,
   createFlowEdgeSchema,
+  createFlowMapEdgeSchema,
+  createFlowMapSchema,
+  saveFlowMapLayoutSchema,
+  updateFlowMapEdgeSchema,
+  updateFlowMapSchema,
   createFolderSchema,
   setFolderQueuesSchema,
   testConnectionSchema,
   updateAlertSchema,
   updateFolderSchema,
+  McpConsentDecision,
+  McpConsentDecisionInput,
+  McpConsentInfo,
+  McpGrant,
+  McpSettings,
+  UpdateMcpSettingsInput,
 } from "@bullpane/shared";
-import { api, buildUrl, seg } from "./client";
+import { api, buildUrl, isApiError, seg } from "./client";
 
 // ---------------------------------------------------------------------------
 // Shapes referenced by API.md that are not (yet) in @bullpane/shared.
@@ -83,7 +101,7 @@ export interface PingResult extends Partial<ConnectionStatus> {
 }
 
 export interface ConnectionOverview {
-  info: RedisServerInfo;
+  info: ServerInfo;
   /** visible queues only — hidden ones are filtered out server-side */
   queues: QueueSummary[];
   status: ConnectionStatus;
@@ -105,6 +123,10 @@ export interface AlertTestResult {
 }
 
 export type JobActionKind = "retry" | "promote" | "remove" | "discard";
+/** `promote` also says what happened to a scheduler's job (see PromoteJobResult). */
+export type JobActionResponse = { ok: boolean } & Partial<Record<"jobId" | "schedulerId", string>> & {
+  mode?: PromoteJobResult["mode"];
+};
 export type QueueActionKind =
   | "pause"
   | "resume"
@@ -125,6 +147,8 @@ export interface SearchJobsParams {
   state: JobState;
   q: string;
   limit: number;
+  /** BullMQ Pro: only this group's jobs; `q` may then be empty */
+  groupId?: string;
 }
 export interface PageParams {
   page: number;
@@ -146,6 +170,9 @@ export const POLL = {
   health: 3_000,
   setup: 10_000,
   slow: 15_000,
+  /** the open flow map: short so a map drawn by an MCP client shows up while it is drawn */
+  flowMap: 2_000,
+  flowMaps: 5_000,
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -181,6 +208,8 @@ export const qk = {
   groupJobs: (cid: string, q: string, gid: string, p: PageParams) =>
     ["connections", cid, "queue", q, "groups", gid, "jobs", p] as const,
   flows: (cid: string, sample: number) => ["flows", cid, sample] as const,
+  flowMaps: ["flow-maps"] as const,
+  flowMap: (id: string) => ["flow-maps", id] as const,
   hiddenQueues: (cid: string) => ["connections", cid, "hidden-queues"] as const,
   folders: ["folders"] as const,
   alerts: ["alerts"] as const,
@@ -189,6 +218,9 @@ export const qk = {
   users: ["users"] as const,
   ssoProviders: ["sso", "providers"] as const,
   ssoSettings: ["sso", "settings"] as const,
+  mcpSettings: ["mcp", "settings"] as const,
+  mcpGrants: (all: boolean) => ["mcp", "grants", all] as const,
+  mcpConsent: (request: string) => ["mcp", "consent", request] as const,
   attentionThresholds: ["settings", "attention"] as const,
   ssoLoginOptions: ["sso", "login-options"] as const,
   audit: (p: AuditFilters & { limit?: number }) => ["audit", p] as const,
@@ -390,11 +422,11 @@ export function useJobSearch(
     queryKey: qk.jobSearch(cid ?? "", queue ?? "", params),
     queryFn: ({ pageParam }) =>
       api.get<JobSearchResult>(`${queuePath(cid!, queue!)}/jobs/search`, {
-        query: { state: params.state, q: params.q, limit: params.limit, cursor: pageParam },
+        query: { state: params.state, q: params.q, groupId: params.groupId, limit: params.limit, cursor: pageParam },
       }),
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (last) => last.nextCursor ?? undefined,
-    enabled: !!cid && !!queue && params.q.trim().length > 0 && (opts.enabled ?? true),
+    enabled: !!cid && !!queue && (params.q.trim().length > 0 || !!params.groupId) && (opts.enabled ?? true),
     staleTime: 30_000,
   });
 }
@@ -434,10 +466,19 @@ export function useJobLogs(
 export function useJobAction(cid: string, queue: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ jobId, action }: { jobId: string; action: JobActionKind }) => {
+    mutationFn: ({
+      jobId,
+      action,
+      scheduler,
+    }: {
+      jobId: string;
+      action: JobActionKind;
+      /** promote only, for a job a scheduler produced (see SchedulerPromoteMode) */
+      scheduler?: SchedulerPromoteMode;
+    }): Promise<JobActionResponse> => {
       const base = `${queuePath(cid, queue)}/jobs/${seg(jobId)}`;
-      if (action === "remove") return api.del<{ ok: boolean }>(base);
-      return api.post<{ ok: boolean }>(`${base}/${action}`);
+      if (action === "remove") return api.del<JobActionResponse>(base);
+      return api.post<JobActionResponse>(`${base}/${action}`, action === "promote" && scheduler ? { scheduler } : undefined);
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: qk.queue(cid, queue) });
@@ -519,10 +560,32 @@ export function useGroups(cid: string | undefined, queue: string | undefined, pa
   return useQuery({
     queryKey: qk.groups(cid ?? "", queue ?? "", params),
     queryFn: () =>
-      api.get<GroupsPage>(`${queuePath(cid!, queue!)}/groups`, { query: { ...params } }),
+      api.get<GroupsResponse>(`${queuePath(cid!, queue!)}/groups`, { query: { ...params } }),
     enabled: !!cid && !!queue,
     refetchInterval: poll(POLL.queues),
     placeholderData: keepPreviousData,
+  });
+}
+
+/** One bounded call of POST /jobs/promote-matching; PromoteMatchingDialog loops over the cursor. */
+export function usePromoteMatching(cid: string, queue: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: PromoteMatchingInput) => api.post<PromoteMatchingResult>(`${queuePath(cid, queue)}/jobs/promote-matching`, input),
+    onSettled: () => qc.invalidateQueries({ queryKey: qk.queue(cid, queue) }),
+  });
+}
+
+export type GroupActionKind = "pause" | "resume" | "drain";
+
+/** BullMQ Pro's group operations; the server answers 409 bullmq_pro_api_required without its package. */
+export function useGroupAction(cid: string, queue: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ groupId, action }: { groupId: string; action: GroupActionKind }) =>
+      api.post<{ ok: boolean }>(`${queuePath(cid, queue)}/groups/${seg(groupId)}/${action}`),
+    // qk.queue is the prefix of the groups list, the group's jobs and the queue summary.
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.queue(cid, queue) }),
   });
 }
 
@@ -1007,6 +1070,111 @@ export function useDeleteFlowEdge() {
 }
 
 // ---------------------------------------------------------------------------
+// Flow maps (Pro)
+//
+// Every write on one map answers the whole FlowMap, so the cache is set from
+// the response (the canvas updates without waiting for the 2 s poll) and the
+// list is invalidated for its node/edge counts.
+// ---------------------------------------------------------------------------
+export function useFlowMaps(enabled = true) {
+  return useQuery({
+    queryKey: qk.flowMaps,
+    queryFn: () => api.get<FlowMapsResponse>("/flow-maps", { silent: [402] }),
+    enabled,
+    refetchInterval: poll(POLL.flowMaps),
+    placeholderData: keepPreviousData,
+  });
+}
+
+export function useFlowMap(id: string | null | undefined, enabled = true) {
+  return useQuery({
+    queryKey: qk.flowMap(id ?? ""),
+    queryFn: () => api.get<FlowMap>(`/flow-maps/${seg(id!)}`, { silent: [402, 404] }),
+    enabled: enabled && !!id,
+    refetchInterval: poll(POLL.flowMap),
+    retry: (count, e) => !(isApiError(e) && e.status === 404) && count < 2,
+  });
+}
+
+function useFlowMapWrite<TVars>(fn: (v: TVars) => Promise<FlowMap>) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: fn,
+    onSuccess: (map) => {
+      qc.setQueryData(qk.flowMap(map.id), map);
+      void qc.invalidateQueries({ queryKey: qk.flowMaps, exact: true });
+    },
+  });
+}
+
+export function useCreateFlowMap() {
+  return useFlowMapWrite((input: z.input<typeof createFlowMapSchema>) => api.post<FlowMap>("/flow-maps", input));
+}
+
+export function useUpdateFlowMap() {
+  return useFlowMapWrite(({ id, input }: { id: string; input: z.input<typeof updateFlowMapSchema> }) =>
+    api.patch<FlowMap>(`/flow-maps/${seg(id)}`, input),
+  );
+}
+
+export function useDeleteFlowMap() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.del<{ ok: boolean }>(`/flow-maps/${seg(id)}`),
+    onSuccess: (_r, id) => {
+      qc.removeQueries({ queryKey: qk.flowMap(id), exact: true });
+      // children moved to the parent: their parentId changed
+      void qc.invalidateQueries({ queryKey: qk.flowMaps });
+    },
+  });
+}
+
+export function useCopyFlowMap() {
+  return useFlowMapWrite(({ id, name, parentId }: { id: string; name?: string; parentId?: string | null }) =>
+    api.post<FlowMap>(`/flow-maps/${seg(id)}/copy`, { name, parentId }),
+  );
+}
+
+export function useAddFlowMapNode() {
+  return useFlowMapWrite(({ mapId, input }: { mapId: string; input: AddFlowMapNodeInput }) =>
+    api.post<FlowMap>(`/flow-maps/${seg(mapId)}/nodes`, input),
+  );
+}
+
+export function useRemoveFlowMapNode() {
+  return useFlowMapWrite(({ mapId, nodeId }: { mapId: string; nodeId: string }) =>
+    api.del<FlowMap>(`/flow-maps/${seg(mapId)}/nodes/${seg(nodeId)}`),
+  );
+}
+
+/** Positions only: no cache write (the canvas already shows them) and no list refresh. */
+export function useSaveFlowMapLayout() {
+  return useMutation({
+    mutationFn: ({ mapId, input }: { mapId: string; input: z.input<typeof saveFlowMapLayoutSchema> }) =>
+      api.put<{ ok: boolean }>(`/flow-maps/${seg(mapId)}/layout`, input),
+  });
+}
+
+export function useCreateFlowMapEdge() {
+  return useFlowMapWrite(({ mapId, input }: { mapId: string; input: z.input<typeof createFlowMapEdgeSchema> }) =>
+    api.post<FlowMap>(`/flow-maps/${seg(mapId)}/edges`, input),
+  );
+}
+
+export function useUpdateFlowMapEdge() {
+  return useFlowMapWrite(
+    ({ mapId, edgeId, input }: { mapId: string; edgeId: string; input: z.input<typeof updateFlowMapEdgeSchema> }) =>
+      api.patch<FlowMap>(`/flow-maps/${seg(mapId)}/edges/${seg(edgeId)}`, input),
+  );
+}
+
+export function useDeleteFlowMapEdge() {
+  return useFlowMapWrite(({ mapId, edgeId }: { mapId: string; edgeId: string }) =>
+    api.del<FlowMap>(`/flow-maps/${seg(mapId)}/edges/${seg(edgeId)}`),
+  );
+}
+
+// ---------------------------------------------------------------------------
 // License (admin)
 // ---------------------------------------------------------------------------
 export function useSetLicense() {
@@ -1114,5 +1282,58 @@ export function useSetSsoSettings() {
       void qc.invalidateQueries({ queryKey: qk.ssoSettings });
       void qc.invalidateQueries({ queryKey: qk.ssoLoginOptions });
     },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// MCP (Pro)
+// ---------------------------------------------------------------------------
+
+export function useMcpSettings(enabled = true) {
+  return useQuery({
+    queryKey: qk.mcpSettings,
+    queryFn: () => api.get<McpSettings>("/mcp/settings", { silent: [402] }),
+    enabled,
+  });
+}
+
+export function useSetMcpSettings() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: UpdateMcpSettingsInput) => api.put<McpSettings>("/mcp/settings", input),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: qk.mcpSettings }),
+  });
+}
+
+export function useMcpGrants(all: boolean, enabled = true) {
+  return useQuery({
+    queryKey: qk.mcpGrants(all),
+    queryFn: () => api.get<McpGrant[]>(`/mcp/grants${all ? "?all=1" : ""}`, { silent: [402] }),
+    enabled,
+  });
+}
+
+export function useRevokeMcpGrant() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.del<{ ok: boolean }>(`/mcp/grants/${seg(id)}`),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ["mcp", "grants"] }),
+  });
+}
+
+export function useMcpConsent(request: string | null) {
+  return useQuery({
+    queryKey: qk.mcpConsent(request ?? ""),
+    queryFn: () => api.get<McpConsentInfo>(`/mcp/consent?request=${encodeURIComponent(request ?? "")}`),
+    enabled: !!request,
+    // The signed request expires in 10 minutes; a refetch on focus would only show that sooner.
+    refetchOnWindowFocus: false,
+    staleTime: Infinity,
+  });
+}
+
+export function useMcpConsentDecision() {
+  return useMutation({
+    mutationFn: (input: McpConsentDecisionInput) => api.post<McpConsentDecision>("/mcp/consent", input),
   });
 }

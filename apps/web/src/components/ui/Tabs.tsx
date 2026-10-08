@@ -7,6 +7,10 @@ export interface TabItem<T extends string> {
   value: T;
   label: ReactNode;
   count?: number | null;
+  /** appended to the count, e.g. "+" when it is a lower bound */
+  countSuffix?: string;
+  /** native tooltip for the tab, e.g. what the count includes */
+  title?: string;
   icon?: ReactNode;
   locked?: boolean;
   /** dot colour class, e.g. "bg-danger" */
@@ -77,6 +81,7 @@ export function Tabs<T extends string>({
             aria-selected={selected}
             tabIndex={selected ? 0 : -1}
             disabled={item.disabled}
+            title={item.title}
             onClick={() => onChange(item.value, item)}
             className={cn(
               "relative inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap font-medium transition-colors outline-none focus-visible:ring-2 focus-visible:ring-accent/60 disabled:opacity-40",
@@ -106,6 +111,7 @@ export function Tabs<T extends string>({
                 )}
               >
                 {formatCompact(item.count)}
+                {item.countSuffix}
               </span>
             )}
             {item.locked && <Lock className="size-3 text-pro" aria-label="Pro feature" />}

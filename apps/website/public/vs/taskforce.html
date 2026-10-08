@@ -1,4 +1,4 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Bullpane vs Taskforce.sh: BullMQ dashboard comparison</title><meta name="description" content="Taskforce.sh is the hosted BullMQ dashboard from the BullMQ authors, from $19.95/month per connection. Bullpane is a self-hosted BullMQ dashboard: free edition, Pro at $39/month per installation with unlimited connections, roles, SSO and an audit log in your own database. Checked September 2026."><meta property="og:title" content="Bullpane vs Taskforce.sh"><meta property="og:type" content="article"><meta property="og:url" content="https://bullpane.com/vs/taskforce"><meta property="og:image" content="https://bullpane.com/shots/overview.jpg"><meta name="twitter:card" content="summary_large_image"><meta property="og:description" content="The hosted dashboard from the BullMQ authors against a self-hosted one that keeps your job data in your network. Features, data flow and price, checked September 2026."><link rel="canonical" href="https://bullpane.com/vs/taskforce"><link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 32 32%27%3E%3Crect width=%2732%27 height=%2732%27 rx=%277%27 fill=%27%230b0d12%27/%3E%3Cpath d=%27M8 8h9a5 5 0 0 1 0 10H8zM8 18h10a5 5 0 0 1 0 10H8z%27 fill=%27%23f5a524%27/%3E%3C/svg%3E"><link rel="stylesheet" href="/styles.css">
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Bullpane vs Taskforce.sh: BullMQ dashboard comparison</title><meta name="description" content="Taskforce.sh is the hosted BullMQ dashboard from the BullMQ authors, from $19.95/month per connection. Bullpane is a self-hosted BullMQ dashboard: free edition, Pro at $39/month per installation with unlimited connections, roles, SSO and an audit log in your own database. Checked September 2026."><meta property="og:title" content="Bullpane vs Taskforce.sh"><meta property="og:type" content="article"><meta property="og:url" content="https://bullpane.com/vs/taskforce"><meta property="og:image" content="https://bullpane.com/shots/overview.jpg"><meta name="twitter:card" content="summary_large_image"><meta property="og:description" content="The hosted dashboard from the BullMQ authors against a self-hosted one that keeps your job data in your network. Features, data flow and price, checked September 2026."><link rel="canonical" href="https://bullpane.com/vs/taskforce"><link rel="icon" href="/favicon.ico" sizes="48x48"><link rel="icon" href="/favicon.svg" type="image/svg+xml"><link rel="apple-touch-icon" href="/apple-touch-icon.png"><link rel="stylesheet" href="/styles.css">
 <script type="application/ld+json">
 {
   "@context": "https://schema.org",
@@ -26,7 +26,7 @@
 }
 </script>
 </head><body>
-<nav class="nav"><div class="wrap"><a class="logo" href="/"><svg viewBox="0 0 32 32" width="24" height="24" aria-hidden="true"><rect width="32" height="32" rx="7" fill="#171b24"/><path d="M8 8h9a5 5 0 0 1 0 10H8zM8 18h10a5 5 0 0 1 0 10H8z" fill="#f5a524"/></svg>Bullpane</a><div class="nav-links"><a href="/">Home</a><a href="/#pricing">Pricing</a><a href="/changelog">Changelog</a></div></div></nav><main class="legal"><div class="wrap">
+<nav class="nav"><div class="wrap"><a class="logo" href="/"><svg viewBox="0 0 32 32" width="24" height="24" aria-hidden="true"><rect width="32" height="32" rx="7" fill="#171b24"/><path d="M8 8h9a5 5 0 0 1 0 10H8zM8 18h10a5 5 0 0 1 0 10H8z" fill="#f5a524"/></svg>Bullpane</a><div class="nav-links"><a href="/">Home</a><a href="/guides/">Guides</a><a href="/#pricing">Pricing</a><a href="/changelog">Changelog</a></div></div></nav><main class="legal"><div class="wrap">
 <h1>Bullpane vs Taskforce.sh</h1>
 <p class="updated">Checked against taskforce.sh and its docs on 27 September 2026 · Other comparisons: <a href="/vs/bull-board">bull-board</a> · <a href="/vs/queuedash">QueueDash</a></p>
 
@@ -54,7 +54,7 @@
 <tr><td>SSO (OIDC, SAML 2.0)</td><td class="hl"><i class="pill pro">Pro</i></td><td><i class="pill no">–</i><small>not listed</small></td></tr>
 <tr><td>Audit log of user actions, in your own database</td><td class="hl"><i class="pill pro">Pro</i><small>CSV export</small></td><td><i class="pill no">–</i><small>audit trail listed for AI agents</small></td></tr>
 <tr><td>AI agents over MCP</td><td class="hl"><i class="pill no">–</i></td><td><i class="pill yes">✓</i></td></tr>
-<tr><td>Source code</td><td class="hl">MIT, on GitHub</td><td>Closed; connector is MIT</td></tr>
+<tr><td>Source code</td><td class="hl">On GitHub: MIT core, Pro source-available</td><td>Closed; connector is MIT</td></tr>
 <tr class="price-row"><td>Price</td><td class="hl">Free · Pro $39/mo or $390/yr, unlimited connections and users</td><td>$19.95/mo for 1 connection · $49.95 for 5 · $99.95 for 15 · unlimited users</td></tr>
 </tbody>
 </table>
@@ -63,7 +63,7 @@
 <h2>Where Taskforce is the better choice</h2>
 <ul>
 <li><strong>It is made by the BullMQ authors.</strong> New BullMQ and BullMQ Pro features show up there first, and nobody knows BullMQ's internals better.</li>
-<li><strong>Nothing to run.</strong> Sign up, connect a Redis, done. Bullpane is a container and a MySQL database you operate.</li>
+<li><strong>Nothing to run.</strong> Sign up, connect a Redis, done. Bullpane is a container you operate (SQLite built in, MySQL optional).</li>
 <li><strong>Cheaper for a single Redis.</strong> Starter is USD 19.95/month for one connection with unlimited users and alerts. Bullpane Pro is USD 39/month.</li>
 <li><strong>More alert channels.</strong> Email, Slack and PagerDuty, with monitors for failed jobs, missing workers, backlog, memory and the connection itself. Bullpane Pro alerts go to Slack or any webhook (which reaches PagerDuty through its Events API, but it is not one click).</li>
 <li><strong>An MCP endpoint</strong> so AI agents can investigate and act on queues with scoped tokens. Bullpane has none yet.</li>
@@ -73,7 +73,7 @@
 <h2>Where Bullpane is the better choice</h2>
 <h3>Your job data never leaves your network</h3>
 <p>The hosted Taskforce reaches your queues in one of two ways. Either its servers connect to your Redis directly, from a published IP, which means your Redis accepts connections from the internet and your Redis password is stored on their side. Or you run <code>taskforce-connector</code>, which opens a WebSocket from your network to <code>api.taskforce.sh</code> and proxies Redis traffic through it. Taskforce says it never stores payloads; they still transit its servers. For job data holding personal, financial or health data, that is a vendor-review conversation. Bullpane runs next to your workers and talks to Redis over your private network. No job data goes out and there is no telemetry; the free edition makes no outbound calls at all, and Pro only renews its license with api.bullpane.com (offline keys exist for air-gapped installs).</p>
-<p>Taskforce does sell an on-premises edition. Its price is not published, and it needs PostgreSQL, Redis 7+, Auth0 and Mailgun to run. Bullpane needs MySQL.</p>
+<p>Taskforce does sell an on-premises edition. Its price is not published, and it needs PostgreSQL, Redis 7+, Auth0 and Mailgun to run. Bullpane needs nothing else: SQLite is built in, MySQL is optional.</p>
 
 <h3>Priced per installation, not per connection</h3>
 <p>Every Redis you want to see (production, staging, each region, each prefix) is a connection. On Taskforce, two to five of them means Growing at USD 49.95/month; up to fifteen, Enterprise at USD 99.95. Bullpane Pro is USD 39/month or USD 390/year for one installation with unlimited connections and unlimited users. And the free edition, with every read and every job action, costs nothing and has no trial clock.</p>
@@ -81,8 +81,8 @@
 <h3>The team features in one plan</h3>
 <p>Bullpane Pro includes user accounts with admin/operator/viewer roles enforced on every API call, SSO over OIDC and SAML 2.0 that your own admin configures in the UI, and an append-only audit log of who retried, drained, paused or obliterated what, from which IP, stored in your database and exportable to CSV. On Taskforce, custom roles start at the Growing plan; SSO and a user audit log are not listed on its pricing page.</p>
 
-<h3>Open source</h3>
-<p>Bullpane is MIT. You can read every Redis command it sends before you point it at production, and it keeps working if the company behind it stops. Its read rules (no <code>KEYS</code>, one Lua round trip per read, payloads truncated inside Redis) are documented and load-tested in <a href="https://github.com/madmorett/bullpane/blob/main/docs/STRESS-TEST.md" rel="noopener">STRESS-TEST.md</a>.</p>
+<h3>Source you can read</h3>
+<p>Bullpane's code is public: the free edition is MIT and the Pro features are source-available. You can read every Redis command it sends before you point it at production, and the free edition keeps working if the company behind it stops. Its read rules (no <code>KEYS</code>, one Lua round trip per read, payloads truncated inside Redis) are documented and load-tested in <a href="https://github.com/madmorett/bullpane/blob/main/docs/STRESS-TEST.md" rel="noopener">STRESS-TEST.md</a>.</p>
 
 <h2>Price for the same setup</h2>
 <div class="table-wrap">
@@ -112,4 +112,4 @@
 </ul>
 <p class="lead-sm" style="margin-top:24px">Something here out of date? Write to <a href="mailto:hello@bullpane.com">hello@bullpane.com</a> and it gets fixed.</p>
 </div></main>
-<footer><div class="wrap"><div>© <span id="y"></span> Bullpane · Built by <a href="https://www.linkedin.com/in/matheusmorett/" rel="noopener">Matheus Morett</a>.</div><div style="display:flex;gap:18px;flex-wrap:wrap"><a href="mailto:hello@bullpane.com">hello@bullpane.com</a><a href="/vs/bull-board">vs bull-board</a><a href="/vs/taskforce">vs Taskforce</a><a href="/vs/queuedash">vs QueueDash</a><a href="/changelog">Changelog</a><a href="/terms">Terms</a><a href="/privacy">Privacy</a></div></div></footer><script>document.getElementById("y").textContent=new Date().getFullYear();</script></body></html>
+<footer><div class="wrap"><div>© <span id="y"></span> Bullpane · Built by <a href="https://www.linkedin.com/in/matheusmorett/" rel="noopener">Matheus Morett</a>.</div><div style="display:flex;gap:18px;flex-wrap:wrap"><a href="mailto:hello@bullpane.com">hello@bullpane.com</a><a href="/guides/">Guides</a><a href="/vs/bull-board">vs bull-board</a><a href="/vs/taskforce">vs Taskforce</a><a href="/vs/queuedash">vs QueueDash</a><a href="/changelog">Changelog</a><a href="/terms">Terms</a><a href="/privacy">Privacy</a></div></div></footer><script>document.getElementById("y").textContent=new Date().getFullYear();</script></body></html>

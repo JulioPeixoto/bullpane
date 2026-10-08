@@ -16,6 +16,7 @@
   ARGV[2]     number of metric points (newest N minutes)
   ARGV[3]     window start (unix ms) for the success/failure rate ZCOUNTs
   ARGV[4]     `${prefix}:${queue}:` (to read a job's opts and detect retention)
+  ARGV[5]     max groups whose waiting jobs are summed into [22]; 0 = skip (lists)
 
   Returns a flat array:
     [1..8]  counts (LLEN for lists, ZCARD for zsets)
@@ -37,6 +38,10 @@
             in the same EVALSHA (no extra round trip to Redis). Worth the budget
             because it is the only way for the `active` tab to say "3 of these hung";
             without it the operator sees "active 8" and cannot tell half are dead.
+    [22]    BullMQ Pro: jobs waiting in groups (each group's list + its prioritized
+            zset), summed over at most ARGV[5] groups. Pro keeps them there, not in
+            `wait`, so [1] alone says 0 for a Pro queue full of grouped jobs.
+    [23]    how many groups were summed into [22]; fewer than [11] = partial sum.
 
   Cluster safe: every key belongs to the same queue (same hash tag).
   Read only: the legacy "0:" wait-list marker is skipped, never popped.
@@ -136,5 +141,26 @@ out[20] = rcall("ZCARD", KEYS[15])
 -- getState() (a stalled job answers `active`) and it only exists while something is
 -- hung. SCARD is O(1), so the count rides along for free in this script.
 out[21] = rcall("SCARD", KEYS[16])
+
+-- Waiting jobs of BullMQ Pro groups: two O(1) commands per group (LLEN + ZCARD),
+-- walking the four status zsets in Pro's order and stopping at ARGV[5] groups, so
+-- the cost is bounded however many groups a queue has. Only the single-queue page
+-- asks (ARGV[5] = 0 everywhere else), and only a queue with groups pays.
+local groupWaiting, groupsSummed = 0, 0
+local maxGroups = tonumber(ARGV[5]) or 0
+if maxGroups > 0 and groupsCount > 0 then
+  local statusKeys = { KEYS[10], ARGV[4] .. "groups:limit", ARGV[4] .. "groups:max", ARGV[4] .. "groups:paused" }
+  for _, statusKey in ipairs(statusKeys) do
+    local left = maxGroups - groupsSummed
+    if left <= 0 then break end
+    for _, gid in ipairs(rcall("ZRANGE", statusKey, 0, left - 1)) do
+      local groupKey = ARGV[4] .. "groups:" .. gid
+      groupWaiting = groupWaiting + rcall("LLEN", groupKey) + rcall("ZCARD", groupKey .. ":p")
+      groupsSummed = groupsSummed + 1
+    end
+  end
+end
+out[22] = groupWaiting
+out[23] = groupsSummed
 
 return out

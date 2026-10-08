@@ -7,6 +7,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { type CreateConnectionInput, createConnectionSchema, PRO_FEATURES, type ProFeature } from "@bullpane/shared";
 import type { BasicAuthCredentials } from "./auth/basic";
+import type { DatabaseConfig } from "./db";
 
 /** apps/server (the package root), resolved from src/ or dist/ alike. */
 export const SERVER_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -16,7 +17,12 @@ export interface Config {
   host: string;
   sessionSecret: string;
   publicUrl: string;
-  databaseUrl: string;
+  /**
+   * DATABASE_URL unset → SQLite at BULLPANE_DATA_DIR/bullpane.db (zero setup).
+   * mysql://… → MySQL (needed for more than one replica). file:<path> → SQLite
+   * at that path.
+   */
+  database: DatabaseConfig;
   /** BULLPANE_LICENSE_KEY, null when empty. Offline token or store key, see license.ts */
   licenseKey: string | null;
   checkoutUrl: string;
@@ -68,6 +74,13 @@ export interface Config {
    * Terraform, a read-only public demo) gets its Redis without a click.
    */
   seedConnections: CreateConnectionInput[];
+  /**
+   * BULLMQ_PRO_DIR: a folder where `@taskforcesh/bullmq-pro` was `npm install`ed
+   * (the Docker recipe in docs/BULLMQ-PRO.md). Unset: Bullpane looks in its own
+   * node_modules. Without the package, writes core bullmq would get wrong on a
+   * BullMQ Pro group are refused.
+   */
+  bullmqProDir: string | null;
   demoRedisUrl: string;
   demoAdminEmail: string;
   demoAdminPassword: string;
@@ -89,7 +102,9 @@ export interface Config {
   logLevel: string;
 }
 
-export const DEFAULT_DATABASE_URL = "mysql://bullpane:bullpane@localhost:3306/bullpane";
+/** Where the SQLite file lives when DATABASE_URL is unset. The image sets /data. */
+export const DEFAULT_DATA_DIR = path.resolve(SERVER_ROOT, "data");
+export const SQLITE_FILENAME = "bullpane.db";
 // Pricing is a section on the home page, not a route: /pricing and /pro both 404.
 export const DEFAULT_CHECKOUT_URL = "https://bullpane.com/#pricing";
 export const DEFAULT_LICENSE_API_URL = "https://api.bullpane.com";
@@ -235,7 +250,7 @@ export function loadConfig(rawEnv: NodeJS.ProcessEnv = process.env, opts: LoadCo
     host: str(env, "HOST", "0.0.0.0"),
     sessionSecret,
     publicUrl,
-    databaseUrl: str(env, "DATABASE_URL", DEFAULT_DATABASE_URL),
+    database: database(env),
     licenseKey: optional(env, "BULLPANE_LICENSE_KEY"),
     checkoutUrl: str(env, "BULLPANE_CHECKOUT_URL", DEFAULT_CHECKOUT_URL),
     licenseApiUrl: str(env, "BULLPANE_LICENSE_API_URL", DEFAULT_LICENSE_API_URL).replace(/\/+$/, ""),
@@ -246,6 +261,7 @@ export function loadConfig(rawEnv: NodeJS.ProcessEnv = process.env, opts: LoadCo
     basicAuth: basicAuth(env, warn),
     unlockedFeatures: unlockedFeatures(env, "BULLPANE_UNLOCKED_FEATURES"),
     seedConnections: connections(env, "BULLPANE_CONNECTIONS"),
+    bullmqProDir: optional(env, "BULLMQ_PRO_DIR"),
     demoRedisUrl: str(env, "DEMO_REDIS_URL", "redis://localhost:6379"),
     demoAdminEmail: str(env, "DEMO_ADMIN_EMAIL", "demo@bullpane.com"),
     demoAdminPassword: str(env, "DEMO_ADMIN_PASSWORD", "demo1234"),
@@ -257,6 +273,24 @@ export function loadConfig(rawEnv: NodeJS.ProcessEnv = process.env, opts: LoadCo
     licensePublicKeyB64: optional(env, "LICENSE_PUBLIC_KEY_B64"),
     logLevel: str(env, "LOG_LEVEL", "info"),
   };
+}
+
+function database(env: NodeJS.ProcessEnv): DatabaseConfig {
+  const url = optional(env, "DATABASE_URL");
+  if (!url) {
+    const dir = path.resolve(str(env, "BULLPANE_DATA_DIR", DEFAULT_DATA_DIR));
+    return { dialect: "sqlite", path: path.join(dir, SQLITE_FILENAME) };
+  }
+  if (/^mysql2?:\/\//i.test(url)) return { dialect: "mysql", url };
+  const file = /^(?:file|sqlite):(.+)$/i.exec(url);
+  if (file?.[1]) {
+    // file:///abs/x.db and file:/abs/x.db are absolute, file:x.db is relative to the cwd.
+    return { dialect: "sqlite", path: path.resolve(file[1].replace(/^\/\/(?=\/)/, "")) };
+  }
+  throw new Error(
+    "Invalid DATABASE_URL: expected mysql://user:pass@host:3306/db or file:/path/to/bullpane.db. " +
+      "Leave it unset to use SQLite in BULLPANE_DATA_DIR.",
+  );
 }
 
 export function isHttps(publicUrl: string): boolean {

@@ -10,6 +10,11 @@ import {
   jobTreeQuerySchema,
   type JobsPage,
   listJobsQuerySchema,
+  promoteJobSchema,
+  type PromoteJobResult,
+  PROMOTE_MATCHING_LIMIT,
+  promoteMatchingSchema,
+  type PromoteMatchingResult,
   searchJobsQuerySchema,
 } from "@bullpane/shared";
 import type { FastifyInstance } from "fastify";
@@ -75,7 +80,7 @@ export async function jobRoutes(app: FastifyInstance): Promise<void> {
     const query = searchJobsQuerySchema.parse(request.query);
     const inspector = await app.ctx.connections.getInspector(request.params.id);
     return withRedis(() =>
-      inspector.searchJobs(request.params.queue, query.state, query.q, { cursor: query.cursor ?? null, limit: query.limit }),
+      inspector.searchJobs(request.params.queue, query.state, query.q, { cursor: query.cursor ?? null, limit: query.limit, groupId: query.groupId }),
     );
   });
 
@@ -120,11 +125,20 @@ export async function jobRoutes(app: FastifyInstance): Promise<void> {
     return { ok: true };
   });
 
-  app.post<JobParams>(`${base}/:jobId/promote`, { preHandler: [operator] }, async (request) => {
+  app.post<JobParams>(`${base}/:jobId/promote`, { preHandler: [operator] }, async (request): Promise<{ ok: true } & PromoteJobResult> => {
+    const input = promoteJobSchema.parse(request.body ?? {});
     const inspector = await app.ctx.connections.getInspector(request.params.id);
-    await withRedis(() => inspector.promoteJob(request.params.queue, request.params.jobId));
-    request.log.info({ queue: request.params.queue, jobId: request.params.jobId, by: request.user?.id }, "job promoted");
-    return { ok: true };
+    const result = await withRedis(() => inspector.promoteJob(request.params.queue, request.params.jobId, input.scheduler));
+    if (result.mode === "ran_copy") {
+      request.auditDetail({ ranCopy: result.jobId, schedulerId: result.schedulerId });
+    } else if (result.mode === "skipped_next") {
+      request.auditDetail({ skippedNext: true, schedulerId: result.schedulerId });
+    }
+    request.log.info(
+      { queue: request.params.queue, jobId: request.params.jobId, mode: result.mode, by: request.user?.id },
+      "job promoted",
+    );
+    return { ok: true, ...result };
   });
 
   app.post<JobParams>(`${base}/:jobId/discard`, { preHandler: [operator] }, async (request) => {
@@ -172,4 +186,33 @@ export async function jobRoutes(app: FastifyInstance): Promise<void> {
       return result;
     });
   }
+
+  /**
+   * Promote every delayed job of a BullMQ Pro group and / or matching a search, past
+   * the 500-id ceiling: the use case is "run this group (or this campaign) now",
+   * thousands of jobs the operator cannot select by hand. Bounded per call
+   * (PROMOTE_MATCHING_LIMIT promotions, a capped number of scan slices) and
+   * resumable through `cursor`, so the UI loops and shows progress.
+   */
+  app.post<QueueParams>(`${base}/promote-matching`, { preHandler: [operator] }, async (request): Promise<PromoteMatchingResult> => {
+    const input = promoteMatchingSchema.parse(request.body ?? {});
+    const inspector = await app.ctx.connections.getInspector(request.params.id);
+    const result = await withRedis(() =>
+      inspector.promoteMatching(request.params.queue, { query: input.query, groupId: input.groupId }, { cursor: input.cursor ?? null, limit: PROMOTE_MATCHING_LIMIT }),
+    );
+    // The query is the operator's own input, not job data; capped like everything else.
+    request.auditDetail({
+      ...(input.groupId ? { groupId: input.groupId } : {}),
+      ...(input.query?.trim() ? { query: input.query.trim().slice(0, 100) } : {}),
+      matched: result.matched,
+      promoted: result.promoted,
+      failed: result.failedCount,
+      ...(result.failed.length > 0 ? { reasons: result.failed.slice(0, 10).map((f) => `${f.jobId}: ${f.reason}`) } : {}),
+    });
+    request.log.info(
+      { queue: request.params.queue, groupId: input.groupId, matched: result.matched, promoted: result.promoted, failed: result.failedCount, by: request.user?.id },
+      "promoted matching delayed jobs",
+    );
+    return result;
+  });
 }

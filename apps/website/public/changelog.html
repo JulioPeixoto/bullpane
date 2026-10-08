@@ -1,9 +1,178 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta property="og:title" content="Changelog — Bullpane"><meta property="og:type" content="website"><meta property="og:url" content="https://bullpane.com/changelog"><meta property="og:image" content="https://bullpane.com/shots/overview.jpg"><meta name="twitter:card" content="summary_large_image"><meta property="og:description" content="Every release of Bullpane, the self-hosted dashboard for BullMQ and BullMQ Pro: what was added, what changed and what was fixed."><link rel="canonical" href="https://bullpane.com/changelog"><link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 32 32%27%3E%3Crect width=%2732%27 height=%2732%27 rx=%277%27 fill=%27%230b0d12%27/%3E%3Cpath d=%27M8 8h9a5 5 0 0 1 0 10H8zM8 18h10a5 5 0 0 1 0 10H8z%27 fill=%27%23f5a524%27/%3E%3C/svg%3E"><link rel="stylesheet" href="/styles.css"><title>Changelog — Bullpane</title><meta name="description" content="Every release of Bullpane, the self-hosted dashboard for BullMQ and BullMQ Pro: what was added, what changed and what was fixed."></head><body>
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta property="og:title" content="Changelog — Bullpane"><meta property="og:type" content="website"><meta property="og:url" content="https://bullpane.com/changelog"><meta property="og:image" content="https://bullpane.com/shots/overview.jpg"><meta name="twitter:card" content="summary_large_image"><meta property="og:description" content="Every release of Bullpane, the self-hosted dashboard for BullMQ and BullMQ Pro: what was added, what changed and what was fixed."><link rel="canonical" href="https://bullpane.com/changelog"><link rel="icon" href="/favicon.ico" sizes="48x48"><link rel="icon" href="/favicon.svg" type="image/svg+xml"><link rel="apple-touch-icon" href="/apple-touch-icon.png"><link rel="stylesheet" href="/styles.css"><title>Changelog — Bullpane</title><meta name="description" content="Every release of Bullpane, the self-hosted dashboard for BullMQ and BullMQ Pro: what was added, what changed and what was fixed."></head><body>
 <nav class="nav"><div class="wrap"><a class="logo" href="/"><svg viewBox="0 0 32 32" width="24" height="24" aria-hidden="true"><rect width="32" height="32" rx="7" fill="#171b24"/><path d="M8 8h9a5 5 0 0 1 0 10H8zM8 18h10a5 5 0 0 1 0 10H8z" fill="#f5a524"/></svg>Bullpane</a><div class="nav-links"><a href="/">Home</a><a href="/#pricing">Pricing</a><a href="/changelog">Changelog</a></div></div></nav><main class="legal"><div class="wrap">
 <h1>Changelog</h1>
-<p class="updated">Last updated 13 September 2026</p>
+<p class="updated">Last updated 4 October 2026</p>
 
-<p class="lead-sm">Every version of Bullpane and what it changed for you. Docker images are published per version: <code>ghcr.io/madmorett/bullpane:0.3.0</code>, <code>:0.3</code>, <code>:latest</code>.</p>
+<p class="lead-sm">Every version of Bullpane and what it changed for you. Docker images are published per version: <code>bullpane/bullpane:0.7.1</code> (also on <code>ghcr.io/madmorett/bullpane</code>), <code>:0.6</code>, <code>:latest</code>.</p>
+
+<article class="release">
+  <div class="release-head">
+    <h2 id="v0-7-1">0.7.1</h2>
+    <span class="release-date">7 October 2026</span>
+  </div>
+  <p class="release-note">Flow maps you can read at a glance.</p>
+  <h3>Fixed</h3>
+  <ul>
+    <li><strong>Arrowheads.</strong> Arrows on flow maps now show which way the work goes. They were missing in 0.7.0.</li>
+    <li><strong>FlowProducer flows read left to right.</strong> The parent queue sits on the left and fans out to the child queues it waits for, on flow maps and on "All queues".</li>
+  </ul>
+</article>
+
+<article class="release">
+  <div class="release-head">
+    <h2 id="v0-7-0">0.7.0</h2>
+    <span class="release-date">7 October 2026</span>
+  </div>
+  <p class="release-note">Flow maps: draw how work moves through your queues, or let your AI draw it.</p>
+  <h3>Added</h3>
+  <ul>
+    <li><strong>Flow maps (Pro).</strong> Name a process and draw the queues it goes through, for example checkout → payment-capture → email-send and pick-pack, with live counts on every queue. A map can cross connections, from one Redis to another or to Postgres, and each connection gets its own colour. Maps can nest like folders if you want, and the layout the team arranges is saved for everyone.</li>
+    <li><strong>Detected maps.</strong> Queues linked by BullMQ's FlowProducer show up as maps on their own, rooted at the parent queue. Copy one to edit it.</li>
+    <li><strong>Draw them from your AI client.</strong> New MCP tools (<code>create_flow_map</code>, <code>add_flow_edge</code> and more) let Claude or any MCP client read your code and draw the flow, while the page updates live.</li>
+  </ul>
+</article>
+
+<article class="release">
+  <div class="release-head">
+    <h2 id="v0-6-3">0.6.3</h2>
+    <span class="release-date">7 October 2026</span>
+  </div>
+  <p class="release-note">Run a whole group, or a whole campaign, now.</p>
+  <h3>Added</h3>
+  <ul>
+    <li><strong>Promote every delayed job of a group, or of a search.</strong> "Promote all delayed" on a group and "Promote all matches" on a search in the delayed tab promote every matching job, not only the 500 that fit a selection. The dialog works in bounded batches, shows the running count and can stop between them. On a BullMQ Pro queue the jobs go back into their group and keep its limits.</li>
+    <li><strong>Group actions on the queue page.</strong> With a group filter on, a toolbar pauses, resumes, promotes or drains that group, including groups BullMQ Pro has not indexed because all their jobs are delayed.</li>
+  </ul>
+  <h3>Fixed</h3>
+  <ul>
+    <li><strong>The waiting count of a BullMQ Pro queue counts the jobs waiting in groups.</strong> A queue with thousands of grouped jobs used to say "waiting 0".</li>
+    <li><strong>The group filter offers groups whose jobs are all delayed.</strong></li>
+  </ul>
+  <p class="lead-sm">Thanks to Matheus Carvalho for this release.</p>
+</article>
+
+<article class="release">
+  <div class="release-head">
+    <h2 id="v0-6-2">0.6.2</h2>
+    <span class="release-date">6 October 2026</span>
+  </div>
+  <p class="release-note">BullMQ Pro groups: pause, resume, drain, and actions that keep jobs in their group.</p>
+  <h3>Added</h3>
+  <ul>
+    <li><strong>Pause, resume and drain a BullMQ Pro group</strong> from the group page and from MCP (<code>pause_group</code>, <code>resume_group</code>; draining stays a confirmation link). Drain is admin-only.</li>
+  </ul>
+  <h3>Fixed</h3>
+  <ul>
+    <li><strong>Job actions no longer take a job out of its BullMQ Pro group.</strong> Promote and retry used to put a grouped job in the queue-wide wait list, where it ran with no group concurrency or rate limit, even while its group was paused. With BullMQ Pro's package installed next to Bullpane, every write on a Pro queue runs Pro's own scripts; without it, the writes that would break a group are refused with a clear message. Thanks to Matheus Carvalho for the change and João Victor Chagas for the report.</li>
+  </ul>
+  <h3>Upgrading</h3>
+  <ul>
+    <li><strong>On BullMQ Pro queues, install BullMQ Pro's package next to Bullpane first</strong>, or promote, retry and drain of grouped jobs are refused. It is commercial, so you install it with your own Taskforce token; the guide is in <a href="https://github.com/madmorett/bullpane/blob/main/docs/BULLMQ-PRO.md" rel="noopener">docs/BULLMQ-PRO.md</a>. Queues without groups and Postgres queues are unaffected.</li>
+  </ul>
+</article>
+
+<article class="release">
+  <div class="release-head">
+    <h2 id="v0-6-1">0.6.1</h2>
+    <span class="release-date">6 October 2026</span>
+  </div>
+  <p class="release-note">A BullMQ Pro group's delayed jobs, found.</p>
+  <h3>Fixed</h3>
+  <ul>
+    <li><strong>A BullMQ Pro group's delayed jobs can be found.</strong> Pro keeps only waiting jobs under their group, so the group filter showed nothing on the other tabs and a group with only delayed jobs was not listed. The group filter now works on every tab, a bounded scan that never reads other groups' payloads; the group page links to its delayed, failed and completed jobs, and the MCP <code>search_jobs</code> tool takes <code>group_id</code>. Thanks to João Victor Chagas for the report and Matheus Carvalho for the fix.</li>
+    <li>Known issue, fixed in 0.6.2: promoting or retrying a grouped job still moves it out of its group. Upgrade to 0.6.2 before promoting a group's jobs.</li>
+  </ul>
+</article>
+
+<article class="release">
+  <div class="release-head">
+    <h2 id="v0-6-0">0.6.0</h2>
+    <span class="release-date">4 October 2026</span>
+  </div>
+  <p class="release-note">BullMQ on Postgres.</p>
+  <h3>Added</h3>
+  <ul>
+    <li><strong>BullMQ 6&rsquo;s Postgres backend.</strong> Add a connection of kind Postgres with your database URL and the schema BullMQ created (default <code>bullmq</code>), or run <code>npx bullpane --postgres postgres://user:pass@host:5432/db</code>. Queues, counts, job lists, search inside job data, job detail and logs, schedulers, flow trees, metrics, alerts and every action work as on Redis. Reads are SQL on BullMQ&rsquo;s own tables; writes go through the official BullMQ API. Bullpane never runs migrations on your database.</li>
+    <li><strong>Works where Postgres actually runs:</strong> behind PgBouncer and other transaction poolers, over TLS with the URL your provider gives you (<code>?sslmode=require</code> means what it means in <code>psql</code>), and with a read-only role, which can browse everything while actions are refused with a clear message.</li>
+    <li><strong>Postgres health card:</strong> connections against <code>max_connections</code>, transactions per second, database and table sizes, and a warning when BullMQ&rsquo;s <code>event</code> table, which BullMQ 6 never trims, passes 1 GiB.</li>
+  </ul>
+  <h3>Changed</h3>
+  <ul>
+    <li>The health monitor is now &ldquo;Server health&rdquo;: it covers Redis and Postgres connections.</li>
+  </ul>
+</article>
+
+<article class="release">
+  <div class="release-head">
+    <h2 id="v0-5-2">0.5.2</h2>
+    <span class="release-date">4 October 2026</span>
+  </div>
+  <p class="release-note">Two new ways to run it: Docker Hub and npx.</p>
+  <h3>Added</h3>
+  <ul>
+    <li><strong>Docker Hub.</strong> The image is also published as <code>bullpane/bullpane</code>, same tags and platforms: <code>docker run -d -p 3000:3000 -v bullpane-data:/data bullpane/bullpane</code>.</li>
+    <li><strong><code>npx bullpane</code>.</strong> The same dashboard without Docker, for a quick look: <code>npx bullpane --redis redis://localhost:6379</code>. Listens on 127.0.0.1 and keeps its SQLite in <code>~/.bullpane</code>.</li>
+  </ul>
+  <h3>Fixed</h3>
+  <ul>
+    <li><strong>A blank page after upgrading.</strong> The page that loads the UI was cached for an hour, so a browser that had the previous version open asked for files the upgrade had removed. It is now always revalidated.</li>
+    <li><code>npx bullpane</code> no longer prints a deprecation warning on first run.</li>
+  </ul>
+</article>
+
+<article class="release">
+  <div class="release-head">
+    <h2 id="v0-5-1">0.5.1</h2>
+    <span class="release-date">4 October 2026</span>
+  </div>
+  <p class="release-note">No database to set up: SQLite is built in, MySQL is optional.</p>
+  <h3>Added</h3>
+  <ul>
+    <li><strong>No database to set up.</strong> Without <code>DATABASE_URL</code>, Bullpane keeps its own data (connections, settings, and on Pro users, alerts, folders, the audit log and MCP clients) in a SQLite file in <code>/data</code>. <code>docker run -p 3000:3000 -v bullpane-data:/data ghcr.io/madmorett/bullpane</code> is the whole install. Mount a volume on <code>/data</code>, or the data dies with the container.</li>
+    <li><strong>MySQL is unchanged and still supported.</strong> An install that sets <code>DATABASE_URL=mysql://&hellip;</code> keeps using MySQL, with no migration on upgrade. Use MySQL when you run more than one replica, or on ECS Fargate. Do not put the SQLite file on NFS/EFS.</li>
+  </ul>
+  <h3>Changed</h3>
+  <ul>
+    <li>With <code>DATABASE_URL</code> unset, the default used to be a MySQL on <code>localhost</code>; it is now SQLite. If you relied on that default, set <code>DATABASE_URL</code> to keep your MySQL data. The boot banner says which database is in use.</li>
+    <li>The repository&rsquo;s <code>docker-compose.yml</code> starts MySQL only with <code>COMPOSE_PROFILES=mysql</code> and <code>DATABASE_URL=mysql://bullpane:bullpane@mysql:3306/bullpane</code> in <code>.env</code>. If you ran it with its bundled MySQL, add those two lines before updating: the volume is the same, so your data is where you left it.</li>
+  </ul>
+  <h3>Fixed</h3>
+  <ul>
+    <li><strong>A database blip during an alerts tick no longer crashes the server (Pro).</strong> The tick now fails, logs, and the next one runs.</li>
+  </ul>
+</article>
+
+<article class="release">
+  <div class="release-head">
+    <h2 id="v0-5-0">0.5.0</h2>
+    <span class="release-date">4 October 2026</span>
+  </div>
+  <p class="release-note">Bullpane is now an MCP server: your queues, inside your AI.</p>
+  <h3>Added</h3>
+  <ul>
+    <li><strong>MCP server (Pro).</strong> Paste <code>&lt;PUBLIC_URL&gt;/mcp</code> into Claude (claude.ai, Claude Desktop, Claude Code) or any MCP client that supports OAuth, sign in with your Bullpane login or SSO, and pick <em>read</em> or <em>read &amp; write</em>. The client acts as you, through the same API as the dashboard: access is the lowest of the admin&rsquo;s ceiling (Settings &rarr; MCP, off by default), what you approved and your role, re-checked on every call, so a viewer never writes. Writes are in the audit log with <code>via: mcp</code>. Drain, clean and obliterate are never run from MCP: the client gets a link that opens the confirmation dialog. Cloud-hosted clients need <code>PUBLIC_URL</code> to be public HTTPS.</li>
+  </ul>
+  <h3>Fixed</h3>
+  <ul>
+    <li><strong>Promoting a job scheduler&rsquo;s delayed job no longer skips the next run.</strong> Promoting one now asks: run a copy now and keep the next run, or promote it and skip the next run. The API and bulk promote default to the copy. Thanks to Matheus Carvalho for the report and the fix.</li>
+  </ul>
+</article>
+
+<article class="release">
+  <div class="release-head">
+    <h2 id="v0-4-0">0.4.0</h2>
+    <span class="release-date">4 October 2026</span>
+  </div>
+  <p class="release-note">Bullpane is now open core. Nothing changes in the product: the free edition is still MIT and still needs no login, and Pro works exactly as before.</p>
+  <h3>Changed</h3>
+  <ul>
+    <li><strong>Licensing.</strong> The code of the Pro features lives in the repository&rsquo;s <code>ee/</code> directories under the Bullpane Commercial License: you can read it, modify it and run it for development and testing, and production use needs a Pro subscription. Everything else stays MIT. Releases up to 0.3.0 remain MIT in full.</li>
+  </ul>
+  <h3>Added</h3>
+  <ul>
+    <li><strong><code>BULLPANE_CONNECTIONS</code></strong>: a JSON array of Redis connections created at boot when no connection of that name exists. It never overwrites a connection edited in the UI, works in read-only mode, and a bad entry stops the boot naming the field without printing the URL.</li>
+  </ul>
+</article>
 
 <article class="release">
   <div class="release-head">

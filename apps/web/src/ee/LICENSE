@@ -1,0 +1,46 @@
+Bullpane Commercial License
+
+Copyright (c) 2026 Matheus Morett
+
+This license covers every file inside a directory named `ee` in the Bullpane
+source code (the "Pro Software"). Everything outside those directories is
+licensed under the MIT license in the root `LICENSE` file.
+
+1. Production use requires a subscription. You may use the Pro Software in
+   production only while you hold a valid Bullpane Pro subscription or license
+   key, and only on the number of installations it covers.
+
+2. What you may do without a subscription. You may read, copy and modify the
+   Pro Software, and run it for development and testing. You may also run it,
+   unmodified, as part of the free edition of Bullpane, where the Pro features
+   stay locked until a valid license key is activated.
+
+3. What you may not do:
+   (a) remove, disable, bypass or alter the license key verification, the
+       edition and feature checks, or any other mechanism that limits the Pro
+       features to licensed installations, or use a build in which any of them
+       was removed, disabled, bypassed or altered;
+   (b) sell, rent, sublicense, or offer as a hosted service the Pro Software or
+       any work derived from it;
+   (c) distribute the Pro Software or any work derived from it, except as part
+       of a copy of the Bullpane source code that keeps every mechanism listed
+       in (a) intact and keeps this file;
+   (d) remove or alter this notice or any copyright notice.
+
+4. Modifications. You may make modifications only for the uses allowed above.
+   The licensor keeps all rights to the Pro Software and to any modifications
+   of it you choose to submit back, which are licensed to the licensor as
+   described in `CONTRIBUTING.md`.
+
+5. Third-party components keep their own licenses.
+
+6. Termination. If you break any of these terms, your rights under this license
+   end immediately.
+
+THE PRO SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE PRO SOFTWARE OR THE USE OR OTHER DEALINGS IN THE PRO
+SOFTWARE.

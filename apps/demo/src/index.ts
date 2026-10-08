@@ -8,9 +8,9 @@ import { Container, getContainer } from "@cloudflare/containers";
 
 export class BullpaneDemo extends Container {
   defaultPort = 3000;
-  // Long enough that a launch-day trickle of visitors never hits a cold start
-  // (a cold start is a fresh Redis the simulator needs ~30 s to fill).
-  sleepAfter = "3h";
+  // Short: an idle container is billed by the second. A cold start costs a
+  // visitor a few seconds and a fresh Redis the simulator fills in ~30 s.
+  sleepAfter = "10m";
 }
 
 interface Env {

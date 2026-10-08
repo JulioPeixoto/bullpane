@@ -4,13 +4,13 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Bullpane — the self-hosted BullMQ dashboard you can put in front of production</title>
-<meta name="description" content="Bullpane is a fast, self-hosted dashboard for BullMQ and BullMQ Pro. Queues, jobs, failures, metrics, Redis health, flows and BullMQ Pro groups in one container next to your stack. The free edition needs no login at all; Pro adds login, roles, alerts, folders, flow graphs and an audit log.">
+<meta name="description" content="Bullpane is a fast, self-hosted dashboard for BullMQ and BullMQ Pro. Queues, jobs, failures, metrics, server health, flows and BullMQ Pro groups, on Redis or on BullMQ 6&#39;s Postgres backend, in one container next to your stack. The free edition needs no login at all; Pro adds login, roles, alerts, folders, flow graphs and an audit log.">
 <meta property="og:title" content="Bullpane — self-hosted BullMQ dashboard">
 <meta property="og:description" content="Everything bull-board does, faster. Free needs no login at all. Pro adds login, users & roles, alerts, folders, flows and an audit log. USD 39/month or 390/year per installation.">
 <meta property="og:url" content="https://bullpane.com/">
 <meta property="og:type" content="website">
 <link rel="canonical" href="https://bullpane.com/">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230b0d12'/%3E%3Cpath d='M8 8h9a5 5 0 0 1 0 10H8zM8 18h10a5 5 0 0 1 0 10H8z' fill='%23f5a524'/%3E%3C/svg%3E">
+<link rel="icon" href="/favicon.ico" sizes="48x48"><link rel="icon" href="/favicon.svg" type="image/svg+xml"><link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <meta property="og:image" content="https://bullpane.com/shots/overview.jpg">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:site" content="@Morett_the_best">
@@ -18,8 +18,8 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500..800&family=Instrument+Serif:ital@1&family=JetBrains+Mono:wght@400;500&display=swap">
 <link rel="stylesheet" href="/styles.css">
-<script type="application/ld+json">{"@context": "https://schema.org", "@type": "SoftwareApplication", "name": "Bullpane", "applicationCategory": "DeveloperApplication", "operatingSystem": "Docker, Linux", "description": "Self-hosted dashboard for BullMQ and BullMQ Pro. Queues, jobs, failures, metrics, Redis health, flows and Pro groups in one container. Free edition with no login; Pro adds users and roles, SSO, alerts, folders, flow graph and an audit log.", "url": "https://bullpane.com/", "image": "https://bullpane.com/shots/overview.jpg", "softwareVersion": "0.1.0", "license": "https://opensource.org/licenses/MIT", "author": {"@type": "Person", "name": "Matheus Morett", "url": "https://www.linkedin.com/in/matheusmorett/"}, "offers": [{"@type": "Offer", "name": "Free", "price": "0", "priceCurrency": "USD", "url": "https://bullpane.com/#install"}, {"@type": "Offer", "name": "Pro monthly", "price": "39", "priceCurrency": "USD", "url": "https://bullpane.com/#pricing", "priceSpecification": {"@type": "UnitPriceSpecification", "price": "39", "priceCurrency": "USD", "billingDuration": "P1M", "unitText": "per installation per month"}}, {"@type": "Offer", "name": "Pro yearly", "price": "390", "priceCurrency": "USD", "url": "https://bullpane.com/#pricing", "priceSpecification": {"@type": "UnitPriceSpecification", "price": "390", "priceCurrency": "USD", "billingDuration": "P1Y", "unitText": "per installation per year"}}]}</script>
-<script type="application/ld+json">{"@context": "https://schema.org", "@type": "FAQPage", "mainEntity": [{"@type": "Question", "name": "How does the license work?", "acceptedAnswer": {"@type": "Answer", "text": "You get a key on the receipt. Paste it in Settings → License. The server activates it once against bullpane.com and re-checks it daily. One key runs one installation; to move servers, remove the key on the old one and paste it on the new one. Lost access to the old server? Write to hello@bullpane.com and we free it."}}, {"@type": "Question", "name": "What if my server cannot reach the internet?", "acceptedAnswer": {"@type": "Answer", "text": "After a successful check the installation keeps Pro for seven days without any contact, and shows a \"grace period\" badge so you know. Air-gapped for real? Write to hello@bullpane.com for an offline key that never phones home."}}, {"@type": "Question", "name": "Does anything about my queues leave my network?", "acceptedAnswer": {"@type": "Answer", "text": "No. The only thing the server ever sends to bullpane.com is the license key, a label for the installation (hostname) and the activation id. Job data, Redis URLs and queue names stay with you. The free edition sends nothing at all."}}, {"@type": "Question", "name": "Does it work with BullMQ Pro?", "acceptedAnswer": {"@type": "Answer", "text": "Yes. Groups are first-class in both editions: status per group, waiting and prioritized jobs, active jobs against the group's concurrency, per-group rate limits and when a limited group resumes, validated against bullmq-pro 7.48. Batch size is a worker option BullMQ never writes to Redis, so the setup panel says \"not observable\" rather than guessing. Bullpane reads the same keys your workers use; it does not bundle or redistribute BullMQ Pro."}}, {"@type": "Question", "name": "Does it work with BullMQ 6?", "acceptedAnswer": {"@type": "Answer", "text": "Yes, on Redis. BullMQ 6 kept the Redis key layout of 5, so the same reads and the official write API work unchanged; the inspector’s test suite runs against 6.3 workers. The BullMQ 6 PostgreSQL backend is not supported yet: it is a different storage model and needs its own reader. If you run BullMQ on Postgres, write to me — how many people ask is how that gets prioritised."}}, {"@type": "Question", "name": "Can it hurt my production Redis?", "acceptedAnswer": {"@type": "Answer", "text": "That was the design constraint. No KEYS, no unbounded scans, one Lua round trip per queue, payloads truncated inside Redis, discovery cached. Start with BULLPANE_READ_ONLY=true if you want to watch before you trust it."}}, {"@type": "Question", "name": "What happens when I cancel?", "acceptedAnswer": {"@type": "Answer", "text": "The installation goes back to the free edition. Alerts, folders, users and the audit log stay in your database and become accessible again the moment a key is activated."}}, {"@type": "Question", "name": "Which database does it need?", "acceptedAnswer": {"@type": "Answer", "text": "MySQL 8 (or MariaDB) for users, sessions, alerts and the audit log. Redis is only ever read, and written through the official BullMQ API for job actions."}}]}</script>
+<script type="application/ld+json">{"@context": "https://schema.org", "@graph": [{"@type": "Organization", "@id": "https://bullpane.com/#organization", "name": "Bullpane", "url": "https://bullpane.com/", "logo": "https://bullpane.com/icon-512.png", "email": "hello@bullpane.com"}, {"@type": "WebSite", "name": "Bullpane", "url": "https://bullpane.com/", "publisher": {"@id": "https://bullpane.com/#organization"}}]}</script><script type="application/ld+json">{"@context": "https://schema.org", "@type": "SoftwareApplication", "name": "Bullpane", "applicationCategory": "DeveloperApplication", "operatingSystem": "Docker, Linux", "description": "Self-hosted dashboard for BullMQ and BullMQ Pro, on Redis or on BullMQ 6's Postgres backend. Queues, jobs, failures, metrics, server health, flows and Pro groups in one container. Free edition with no login; Pro adds users and roles, SSO, alerts, folders, flow graph, an audit log and an MCP server for Claude and other AI clients.", "url": "https://bullpane.com/", "image": "https://bullpane.com/shots/overview.jpg", "softwareVersion": "0.7.1", "license": "https://github.com/madmorett/bullpane/blob/main/LICENSE", "author": {"@type": "Person", "name": "Matheus Morett", "url": "https://www.linkedin.com/in/matheusmorett/"}, "offers": [{"@type": "Offer", "name": "Free", "price": "0", "priceCurrency": "USD", "url": "https://bullpane.com/#install"}, {"@type": "Offer", "name": "Pro monthly", "price": "39", "priceCurrency": "USD", "url": "https://bullpane.com/#pricing", "priceSpecification": {"@type": "UnitPriceSpecification", "price": "39", "priceCurrency": "USD", "billingDuration": "P1M", "unitText": "per installation per month"}}, {"@type": "Offer", "name": "Pro yearly", "price": "390", "priceCurrency": "USD", "url": "https://bullpane.com/#pricing", "priceSpecification": {"@type": "UnitPriceSpecification", "price": "390", "priceCurrency": "USD", "billingDuration": "P1Y", "unitText": "per installation per year"}}]}</script>
+<script type="application/ld+json">{"@context": "https://schema.org", "@type": "FAQPage", "mainEntity": [{"@type": "Question", "name": "How does the license work?", "acceptedAnswer": {"@type": "Answer", "text": "You get a key on the receipt. Paste it in Settings → License. The server activates it once against bullpane.com and re-checks it daily. One key runs one installation; to move servers, remove the key on the old one and paste it on the new one. Lost access to the old server? Write to hello@bullpane.com and we free it."}}, {"@type": "Question", "name": "What if my server cannot reach the internet?", "acceptedAnswer": {"@type": "Answer", "text": "After a successful check the installation keeps Pro for seven days without any contact, and shows a \"grace period\" badge so you know. Air-gapped for real? Write to hello@bullpane.com for an offline key that never phones home."}}, {"@type": "Question", "name": "Does anything about my queues leave my network?", "acceptedAnswer": {"@type": "Answer", "text": "No. The only thing the server ever sends to bullpane.com is the license key, a label for the installation (hostname) and the activation id. Job data, Redis URLs and queue names stay with you. The free edition sends nothing at all."}}, {"@type": "Question", "name": "Does it work with BullMQ Pro?", "acceptedAnswer": {"@type": "Answer", "text": "Yes. Groups are first-class in both editions: status per group, waiting and prioritized jobs, active jobs against the group's concurrency, per-group rate limits and when a limited group resumes, validated against bullmq-pro 7.48. Batch size is a worker option BullMQ never writes to Redis, so the setup panel says \"not observable\" rather than guessing. Bullpane reads the same keys your workers use; it does not bundle or redistribute BullMQ Pro."}}, {"@type": "Question", "name": "Does it work with BullMQ 6?", "acceptedAnswer": {"@type": "Answer", "text": "Yes, on Redis and on its PostgreSQL backend. On Redis, BullMQ 6 kept the key layout of 5, so the same reads and the official write API work unchanged. On Postgres (since Bullpane 0.6.0), add a connection of kind Postgres with your database URL and the schema BullMQ created (default bullmq): reads are SQL on BullMQ’s own tables, writes go through the official API, and it works behind PgBouncer, over TLS and with a read-only role. Or npx bullpane --postgres postgres://…"}}, {"@type": "Question", "name": "Can it hurt my production Redis?", "acceptedAnswer": {"@type": "Answer", "text": "That was the design constraint. No KEYS, no unbounded scans, one Lua round trip per queue, payloads truncated inside Redis, discovery cached. Start with BULLPANE_READ_ONLY=true if you want to watch before you trust it."}}, {"@type": "Question", "name": "What happens when I cancel?", "acceptedAnswer": {"@type": "Answer", "text": "The installation goes back to the free edition. Alerts, folders, users and the audit log stay in your database and become accessible again the moment a key is activated."}}, {"@type": "Question", "name": "Which database does it need?", "acceptedAnswer": {"@type": "Answer", "text": "None to set up. Users, sessions, alerts and the audit log live in a SQLite file inside the container's /data volume. MySQL 8 (or MariaDB) is optional: point DATABASE_URL at it when you run more than one replica or want a managed database. Redis is only ever read, and written through the official BullMQ API for job actions."}}]}</script>
 </head>
 <body>
 
@@ -34,6 +34,7 @@
       <a href="#pro">Pro</a>
       <a href="#pricing" class="keep">Pricing</a>
       <a href="#faq">FAQ</a>
+      <a href="/guides/">Guides</a>
       <a href="/changelog">Changelog</a>
       <a href="https://demo.bullpane.com" rel="noopener">Live demo</a>
       <a href="#install" class="btn sm keep">Install</a>
@@ -43,35 +44,40 @@
 
 <header class="hero">
   <div class="wrap">
-    <span class="eyebrow">Self-hosted · BullMQ &amp; BullMQ Pro · v0.3.0</span>
+    <span class="eyebrow">Self-hosted · BullMQ &amp; BullMQ Pro · on Redis or Postgres · v0.6.0</span>
     <h1>The BullMQ dashboard you can <em>put in front of production.</em></h1>
-    <p class="lead">One container next to your stack. Queues, jobs, failures, progress, logs, flows and Pro groups, safe to point at production from day one. The free edition needs no account and no login: start it and open it.</p>
+    <p class="lead">One container next to your stack, for BullMQ on Redis or on its Postgres backend. Queues, jobs, failures, progress, logs, flows and Pro groups, safe to point at production from day one. The free edition needs no account and no login: start it and open it.</p>
     <div class="cta">
       <a class="btn primary" href="#install">Install the free edition</a>
       <a class="btn" href="https://demo.bullpane.com" rel="noopener">Open the live demo</a>
-      <span class="note">MIT. Pro features are shown locked, never hidden.</span>
+      <span class="note">Free edition is MIT. Pro features are shown locked, never hidden.</span>
     </div>
     <ul class="proof" aria-label="Facts">
       <li>100M+ jobs/day watched in production</li>
-      <li>No performance issues on your Redis</li>
-      <li>One container: Bullpane + MySQL</li>
+      <li>No performance issues on your Redis or Postgres</li>
+      <li>One container. No database to set up</li>
     </ul>
 
     <figure class="hero-shot frame">
-      <div class="bar"><em>/</em><b>overview · prod-redis-01</b></div>
-      <img src="/shots/overview.jpg" width="2160" height="1350" alt="Bullpane overview: every connection and queue with counts, success rate and a sparkline, grouped in folders" fetchpriority="high">
+      <div class="bar"><em>/</em><b>40 seconds of Bullpane</b></div>
+      <video autoplay muted loop playsinline preload="metadata" width="1600" height="900" poster="/media/hero-poster.jpg" aria-label="40 seconds of Bullpane: queues building themselves with live numbers, a queue failing, searching inside job payloads and retrying the matches in bulk, the flow graph, BullMQ Pro groups, an alert firing to Slack, roles refusing a drain, the audit log, SSO, and an AI client retrying jobs over MCP">
+        <source src="/media/hero.mp4" type="video/mp4">
+      </video>
     </figure>
 
     <div class="terminal" id="install">
       <div class="bar"><em>$</em><b>install</b></div>
-<pre><span class="c"># 1. run it next to the Redis your workers already use</span>
+<pre><span class="c"># 1. run it next to the Redis or Postgres your workers already use</span>
 docker run -d --name bullpane -p 3000:3000 \
-  -e DATABASE_URL=<span class="k">mysql://user:pass@mysql:3306/bullpane</span> \
-  ghcr.io/madmorett/bullpane:latest
+  -v <span class="k">bullpane-data:/data</span> \
+  bullpane/bullpane
+<span class="c">#    SQLite is built in. MySQL is optional: -e DATABASE_URL=mysql://…</span>
+<span class="c">#    no Docker? </span>npx bullpane --redis <span class="k">redis://localhost:6379</span>
+<span class="c">#           or  </span>npx bullpane --postgres <span class="k">postgres://user:pass@localhost:5432/app</span>
 
-<span class="c"># 2. open http://localhost:3000 and add a Redis connection. No account, no login.</span>
+<span class="c"># 2. open http://localhost:3000 and add a Redis or Postgres connection. No account, no login.</span>
 <span class="c"># 3. that's the whole install. Pro is a key you paste in Settings → License.</span>
-<span class="g">✓</span> works with Redis, Redis Cluster, Valkey · BullMQ 4, 5 and 6 · BullMQ Pro</pre>
+<span class="g">✓</span> works with Redis, Redis Cluster, Valkey, Postgres · BullMQ 4, 5 and 6 · BullMQ Pro</pre>
     </div>
 
     <p class="builtby">
@@ -154,7 +160,7 @@ docker run -d --name bullpane -p 3000:3000 \
 <figure class="frame">
       <div class="bar"><em>/health</em></div>
       <img src="/shots/health.jpg" width="1776" height="960" loading="lazy" alt="Redis health, one INFO every three seconds">
-      <figcaption><h3>Redis health, one INFO every three seconds</h3><p>Memory, CPU, commands per second, latency, clients, keys. Ten tabs cost your Redis as much as one.</p></figcaption>
+      <figcaption><h3>Server health, one read every three seconds</h3><p>Redis: memory, CPU, commands per second, latency, clients, keys. Postgres: connections, transactions per second, table sizes and BullMQ&rsquo;s untrimmed event table. Ten tabs cost your server as much as one.</p></figcaption>
     </figure>
 <figure class="frame">
       <div class="bar"><em>/schedulers</em></div>
@@ -194,7 +200,7 @@ docker run -d --name bullpane -p 3000:3000 \
 <figure class="frame">
       <div class="bar"><em>/health</em></div>
       <img src="/shots/health.jpg" width="1776" height="960" loading="lazy" alt="Redis health, one INFO every three seconds">
-      <figcaption><h3>Redis health, one INFO every three seconds</h3><p>Memory, CPU, commands per second, latency, clients, keys. Ten tabs cost your Redis as much as one.</p></figcaption>
+      <figcaption><h3>Server health, one read every three seconds</h3><p>Redis: memory, CPU, commands per second, latency, clients, keys. Postgres: connections, transactions per second, table sizes and BullMQ&rsquo;s untrimmed event table. Ten tabs cost your server as much as one.</p></figcaption>
     </figure>
 <figure class="frame">
       <div class="bar"><em>/schedulers</em></div>
@@ -221,6 +227,16 @@ docker run -d --name bullpane -p 3000:3000 \
     <h2>Pro: the features a team needs</h2>
     <p class="sub">One key unlocks everything below for one installation, unlimited users. Verified with bullpane.com once a day, keeps working for seven days offline. Pro features are always shown locked in the free edition, never hidden.</p>
 
+    <div class="show wide" id="mcp">
+      <div class="copy">
+        <div><span class="tag pro-tag">Pro · new in 0.5.0</span>
+        <h3>Your queues, inside your AI</h3></div>
+        <div><p>Bullpane is an MCP server. Add its URL to Claude, or any MCP client that supports OAuth, and sign in with your Bullpane login or SSO. Ask why a queue is failing; let it retry the jobs.</p>
+        <p>It acts as <em>you</em>: the same API as the dashboard, with your role. Access is the lowest of the admin's ceiling, what you approved and your role, so a viewer never writes. Every write lands in the audit log, and drain or obliterate always comes back to the dashboard for a human to confirm.</p></div>
+      </div>
+      <figure class="frame"><div class="bar"><em>MCP</em><b>Claude + Bullpane</b></div><video autoplay muted loop playsinline preload="metadata" width="1600" height="900" poster="/media/mcp-poster.jpg" aria-label="Claude connected to Bullpane over MCP: signing in, finding 37 failed payments jobs, retrying them as the user with an audit row, and being refused an obliterate, which goes back to the dashboard for confirmation"><source src="/media/mcp.webm" type="video/webm"><source src="/media/mcp.mp4" type="video/mp4"></video></figure>
+    </div>
+
     <div class="show flip">
       <div class="copy">
         <span class="tag pro-tag">Pro</span>
@@ -235,7 +251,7 @@ docker run -d --name bullpane -p 3000:3000 \
       <div class="copy">
         <span class="tag pro-tag">Pro</span>
         <h3>Who did what, including the refused attempts</h3>
-        <p>Every mutating action: who, what, on which queue or job, result, IP. Append-only, in your own MySQL. A discard the role did not allow shows up as <em>refused</em>, which is the row you will actually want one day.</p>
+        <p>Every mutating action: who, what, on which queue or job, result, IP. Append-only, in your own database. A discard the role did not allow shows up as <em>refused</em>, which is the row you will actually want one day.</p>
         <p>Filter by person, action, connection, queue or date. Export CSV for the auditor. Job payloads are never stored.</p>
       </div>
       <figure class="frame"><div class="bar"><em>/audit</em><b>audit log</b></div><img src="/shots/audit.jpg" width="1776" height="1278" loading="lazy" alt="Audit log listing retries, a refused discard, a queue clean and user invites with actor, target, result and IP"></figure>
@@ -297,6 +313,7 @@ docker run -d --name bullpane -p 3000:3000 \
           <li>Folders and flow graph</li>
           <li>Audit log with CSV export</li>
           <li>SSO (OIDC &amp; SAML 2.0)</li>
+          <li>MCP for Claude and any MCP client</li>
           <li>Unlimited users, one installation</li>
         </ul>
         <div class="spacer"></div>
@@ -334,7 +351,7 @@ docker run -d --name bullpane -p 3000:3000 \
       <a class="talk-card" href="https://github.com/madmorett/bullpane/issues" rel="noopener">
         <span class="talk-label">GitHub</span>
         <span class="talk-mid">Open an issue</span>
-        <span class="talk-note">Public bugs and feature requests. The repo is MIT.</span>
+        <span class="talk-note">Public bugs and feature requests. The source is on GitHub.</span>
       </a>
       <a class="talk-card" href="https://x.com/Morett_the_best" rel="noopener">
         <span class="talk-label">X</span>
@@ -358,10 +375,10 @@ docker run -d --name bullpane -p 3000:3000 \
     <details><summary>What if my server cannot reach the internet?</summary><p>After a successful check the installation keeps Pro for seven days without any contact, and shows a "grace period" badge so you know. Air-gapped for real? Write to <a href="mailto:hello@bullpane.com">hello@bullpane.com</a> for an offline key that never phones home.</p></details>
     <details><summary>Does anything about my queues leave my network?</summary><p>No. The only thing the server ever sends to bullpane.com is the license key, a label for the installation (hostname) and the activation id. Job data, Redis URLs and queue names stay with you. The free edition sends nothing at all.</p></details>
     <details><summary>Does it work with BullMQ Pro?</summary><p>Yes. Groups are first-class in both editions: status per group, waiting and prioritized jobs, active jobs against the group's concurrency, per-group rate limits and when a limited group resumes, validated against bullmq-pro 7.48. Batch size is a worker option BullMQ never writes to Redis, so the setup panel says "not observable" rather than guessing. Bullpane reads the same keys your workers use; it does not bundle or redistribute BullMQ Pro.</p></details>
-    <details><summary>Does it work with BullMQ 6?</summary><p>Yes, on Redis. BullMQ 6 kept the Redis key layout of 5, so the same reads and the official write API work unchanged; the inspector&rsquo;s test suite runs against 6.3 workers. The BullMQ 6 <strong>PostgreSQL backend is not supported yet</strong>: it is a different storage model and needs its own reader. If you run BullMQ on Postgres, <a href="mailto:hello@bullpane.com">write to me</a> &mdash; how many people ask is how that gets prioritised.</p></details>
+    <details><summary>Does it work with BullMQ 6?</summary><p>Yes, on Redis and on its <strong>PostgreSQL backend</strong>. On Redis, BullMQ 6 kept the key layout of 5, so the same reads and the official write API work unchanged. On Postgres (since Bullpane 0.6.0), add a connection of kind Postgres with your database URL and the schema BullMQ created (default <code>bullmq</code>): reads are SQL on BullMQ&rsquo;s own tables, writes go through the official API, and it works behind PgBouncer, over TLS and with a read-only role. Or <code>npx bullpane --postgres postgres://&hellip;</code>.</p></details>
     <details><summary>Can it hurt my production Redis?</summary><p>That was the design constraint. No <code>KEYS</code>, no unbounded scans, one Lua round trip per queue, payloads truncated inside Redis, discovery cached. Start with <code>BULLPANE_READ_ONLY=true</code> if you want to watch before you trust it.</p></details>
     <details><summary>What happens when I cancel?</summary><p>The installation goes back to the free edition. Alerts, folders, users and the audit log stay in your database and become accessible again the moment a key is activated.</p></details>
-    <details><summary>Which database does it need?</summary><p>MySQL 8 (or MariaDB) for users, sessions, alerts and the audit log. Redis is only ever read, and written through the official BullMQ API for job actions.</p></details>
+    <details><summary>Which database does it need?</summary><p>None to set up. Users, sessions, alerts and the audit log live in a SQLite file inside the container's /data volume. MySQL 8 (or MariaDB) is optional: point DATABASE_URL at it when you run more than one replica or want a managed database. Redis is only ever read, and written through the official BullMQ API for job actions.</p></details>
   </div>
 </section>
 
@@ -375,6 +392,7 @@ docker run -d --name bullpane -p 3000:3000 \
         <a href="https://www.linkedin.com/in/matheusmorett/" rel="noopener">LinkedIn</a>
         <a href="https://github.com/madmorett/bullpane" rel="noopener">GitHub</a>
         <a href="/changelog">Changelog</a>
+        <a href="/guides/">BullMQ guides</a>
         <a href="/vs/bull-board">vs bull-board</a>
         <a href="/vs/taskforce">vs Taskforce</a>
         <a href="/vs/queuedash">vs QueueDash</a>

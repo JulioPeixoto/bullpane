@@ -2,7 +2,7 @@
 //
 // One Worker in front of ONE container instance (see src/index.ts). The image
 // (./Dockerfile, built from the repository root) holds the free edition in
-// read-only mode plus its own Redis, MariaDB and simulator, so nothing here
+// read-only mode plus its own Redis and simulator (SQLite, no database server), so nothing here
 // touches any real data. Requires the Workers Paid plan.
 {
   "name": "bullpane-demo",
@@ -15,8 +15,9 @@
       "class_name": "BullpaneDemo",
       "image": "./Dockerfile",
       "image_build_context": "../..",
-      // 1/2 vCPU, 4 GiB: app + MariaDB + Redis + simulator fit with room.
-      "instance_type": "standard-1",
+      // 1/4 vCPU, 1 GiB: app + Redis + simulator on SQLite. "lite" (256 MiB)
+      // cannot hold two Node processes and Redis.
+      "instance_type": "basic",
       "max_instances": 1
     }
   ],

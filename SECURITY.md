@@ -34,8 +34,9 @@ bugs and are not:
   run it on a private network, or activate a Pro key for login, roles and the
   audit log.
 - **The Pro features are in this repository and gated by a signed key.** Anyone
-  can read the gating code and build an unlocked binary. That is the tradeoff of
-  shipping the whole product under MIT; a bypass in a build you compiled
+  can read the gating code and build an unlocked binary. Doing so breaks the
+  Bullpane Commercial License that covers the `ee/` directories, but it is a
+  licensing matter, not a vulnerability: a bypass in a build you compiled
   yourself is not a security issue.
 
 Things that **are** in scope:

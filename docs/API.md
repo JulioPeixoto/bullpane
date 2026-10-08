@@ -31,16 +31,16 @@ Pro column: the feature that gates the route (402 in free edition).
 | DELETE | /license | admin | | → `Edition`. Releases the activation at the store (best effort) |
 | POST | /license/refresh | admin | | → `Edition`. Re-checks a subscription key now; never fails, see `license.status` |
 | GET | /connections | viewer | | → `RedisConnection[]` (url redacted, `status` included) |
-| POST | /connections | admin | | `CreateConnectionInput` → `RedisConnection` |
+| POST | /connections | admin | | `CreateConnectionInput` → `RedisConnection`. `kind` is `"redis"` (default) or `"postgres"` (BullMQ 6); for Postgres `prefix` is the schema (default `bullmq`) and `url` is `postgres://…` |
 | POST | /connections/test | admin | | `testConnectionSchema` → `PingResult` |
-| PATCH | /connections/:id | admin | | `UpdateConnectionInput` → `RedisConnection` |
+| PATCH | /connections/:id | admin | | `UpdateConnectionInput` → `RedisConnection` (`kind` cannot change; the URL is checked against the stored kind) |
 | DELETE | /connections/:id | admin | | → `{ ok }` |
-| GET | /connections/:id/overview | viewer | | → `{ info: RedisServerInfo, queues: QueueSummary[], status: ConnectionStatus, hiddenCount: number }` |
+| GET | /connections/:id/overview | viewer | | → `{ info: ServerInfo (RedisServerInfo, or PostgresServerInfo with backend "postgres"), queues: QueueSummary[], status: ConnectionStatus, hiddenCount: number }` |
 | GET | /connections/:id/queues | viewer | | `?refresh=1` forces rediscovery, `?includeHidden=1` keeps hidden queues in → `QueueSummary[]` |
 | GET | /connections/:id/hidden-queues | viewer | | → `HiddenQueue[]` (queue name, when, who) |
 | POST | /connections/:id/hidden-queues | operator | | `hideQueueSchema` (`{ queueName }`) → `HiddenQueue[]` (201, idempotent) |
 | DELETE | /connections/:id/hidden-queues/:queueName | operator | | → `HiddenQueue[]` (idempotent) |
-| GET | /connections/:id/queues/:queue | viewer | | → `QueueSummary` (with `metrics`) |
+| GET | /connections/:id/queues/:queue | viewer | | → `QueueSummary` (with `metrics`, and on a BullMQ Pro queue with groups `groupWaiting`: jobs waiting inside groups, which `counts.waiting` does not include) |
 | GET | /connections/:id/queues/:queue/jobs | viewer | | `listJobsQuerySchema` → `JobsPage` |
 | GET | /connections/:id/queues/:queue/jobs/search | viewer | | `searchJobsQuerySchema` → `JobSearchResult` |
 | POST | /connections/:id/queues/:queue/jobs | operator | | `AddJobInput` → `{ id }` |
@@ -48,7 +48,7 @@ Pro column: the feature that gates the route (402 in free edition).
 | GET | /connections/:id/queues/:queue/jobs/:jobId/logs | viewer | | `?start&end` → `{ logs, count }` |
 | DELETE | /connections/:id/queues/:queue/jobs/:jobId | operator | | → `{ ok }` |
 | POST | /connections/:id/queues/:queue/jobs/:jobId/retry | operator | | → `{ ok }` |
-| POST | /connections/:id/queues/:queue/jobs/:jobId/promote | operator | | → `{ ok }` |
+| POST | /connections/:id/queues/:queue/jobs/:jobId/promote | operator | | `promoteJobSchema` (`{ scheduler?: "run_copy" \| "skip_next" }`, only read for a job scheduler's job, default `run_copy`) → `{ ok } & PromoteJobResult` |
 | POST | /connections/:id/queues/:queue/jobs/:jobId/discard | operator | | → `{ ok }` |
 | POST | /connections/:id/queues/:queue/jobs/bulk/retry | operator | | `bulkJobActionSchema` (`{ jobIds }`) → `BulkJobActionResult` |
 | POST | /connections/:id/queues/:queue/jobs/bulk/remove | operator | | `bulkJobActionSchema` → `BulkJobActionResult` |
@@ -71,6 +71,12 @@ Pro column: the feature that gates the route (402 in free edition).
 | PATCH | /folders/:id | operator | folders | `updateFolderSchema` → `Folder` |
 | DELETE | /folders/:id | operator | folders | → `{ ok }` |
 | PUT | /folders/:id/queues | operator | folders | `setFolderQueuesSchema` → `Folder` |
+| GET | /mcp/settings | viewer | mcp | → `McpSettings` (`maxAccess`, the endpoint to paste, `reachableFromCloud`) |
+| PUT | /mcp/settings | admin | mcp | `updateMcpSettingsSchema` (`{ maxAccess: "off" \| "read" \| "write" }`) → `McpSettings` |
+| GET | /mcp/grants | viewer | mcp | `?all=1` (admin: every user's) → `McpGrant[]` (own by default) |
+| DELETE | /mcp/grants/:id | viewer | mcp | own grant, or any for an admin → `{ ok }` (404 otherwise) |
+| GET | /mcp/consent | viewer | mcp | `?request=<signed>` → `McpConsentInfo` |
+| POST | /mcp/consent | viewer | mcp | `mcpConsentDecisionSchema` → `McpConsentDecision` (`{ redirectTo }`) |
 | GET | /alerts | viewer | alerts | → `Alert[]` |
 | POST | /alerts | operator | alerts | `CreateAlertInput` → `Alert` |
 | PATCH | /alerts/:id | operator | alerts | `updateAlertSchema` → `Alert` |
@@ -102,11 +108,23 @@ Notes
 |---|---|---|---|---|
 | GET | /connections/:id/queues/:queue/setup | viewer | | → `QueueSetup` (meta hash, limiter TTL, workers via CLIENT LIST, group settings; cached 10 s) |
 | GET | /connections/:id/queues/:queue/jobs?groupId= | viewer | | when `groupId` is set the page comes from that Pro group's list and `state` is ignored |
+| GET | /connections/:id/queues/:queue/jobs/search?groupId= | viewer | | only jobs of that Pro group (exact id: the `gid` hash field, else `opts.group.id`); `q` may then be empty. The way to list a group's delayed, failed, completed or active jobs, which Pro keeps in the queue-wide state keys |
+| GET | /connections/:id/queues/:queue/groups | viewer | | → `GroupsResponse` (`GroupsPage` + `bullmqProApi`: BullMQ Pro's package is installed) |
+| POST | /connections/:id/queues/:queue/groups/:groupId/pause | operator | | `QueuePro.pauseGroup` → `{ ok }`; audited `group.pause`. Works on a group Pro has not indexed yet (only delayed jobs): Pro records the pause and the jobs join it paused |
+| POST | /connections/:id/queues/:queue/jobs/promote-matching | operator | | `promoteMatchingSchema` (`query` and / or `groupId`, `cursor`) → `PromoteMatchingResult`. Promotes every delayed job that matches, past the 500-id bulk ceiling: at most `PROMOTE_MATCHING_LIMIT` (2000) per call, then `nextCursor`. Audited `job.promote_matching` with the group, the query (100 chars) and counts |
+| POST | /connections/:id/queues/:queue/groups/:groupId/resume | operator | | `QueuePro.resumeGroup` → `{ ok }`; audited `group.resume` |
+| POST | /connections/:id/queues/:queue/groups/:groupId/drain | admin | | `QueuePro.deleteGroup` (the group's waiting and prioritized jobs) → `{ ok }`; audited `group.drain` |
+
+The three group actions, and job actions that would take a grouped job out of its group,
+answer `409 conflict` with `bullmq_pro_api_required: …` when BullMQ Pro's package is not
+installed next to Bullpane. See docs/BULLMQ-PRO.md for the full list.
 | GET | /connections/:id/overview | viewer | | → `{ info, queues, status, hiddenCount, discovery: DiscoveryStatus }` — `discovery.complete` is false until one full SCAN cycle finished (large keyspaces) |
 
 `JobSummary.dataBytes` is the payload size (HSTRLEN). Payloads above the list cap (32 KiB) are not read:
 `dataPreview` is `""` with `dataTruncated: true`. `JobSearchResult.skippedLargePayloads` counts jobs whose
 data was above the search cap (256 KiB) and matched on id / name / error only.
+A search with `groupId` checks the group before reading any payload, so it inspects up to
+`groupScanPerCall` (10 000) jobs per call instead of `maxScanPerCall` (1000).
 
 `QueueSummary.rates` (trailing 60 min completed/failed + successPct) is now included in every
 queues/overview response. It costs two `ZCOUNT`s per queue inside the same stats script.
@@ -218,7 +236,7 @@ admin wanted you to believe". Rows leave only by age, through the retention job.
 is `admin` and not `operator`, because the log shows admin-only actions (connections,
 users, license) and reading who changed access is a different right from pausing a queue.
 
-**Instrumentation is one global `onResponse` hook** (`plugins/audit.ts`), registered in
+**Instrumentation is one global `onResponse` hook** (`ee/plugins/audit.ts`), registered in
 `routes/index.ts` next to `blockWrites` and for the same reason: a single choke point
 beats remembering to instrument each handler. A per-handler call that someone forgets
 leaves a hole nobody notices until an auditor asks; a route missing from the map logs a
@@ -257,7 +275,7 @@ deleted people stay filterable.
 state/grace/limit and how many were removed, the job NAME added and its payload size in
 bytes, which fields of a user changed, the licensee) — never `job.data`, which routinely
 holds customer PII and would end up in a CSV export. `sanitizeDetail` in
-`services/audit.ts` strips `data`, `payload`, `body`, `returnvalue`, `password`, `url`,
+`ee/services/audit.ts` strips `data`, `payload`, `body`, `returnvalue`, `password`, `url`,
 `token`, `secret` and `key` at any depth, so the rule is enforced in one place instead of
 depending on every future handler remembering it. There is a test for exactly this.
 
@@ -410,3 +428,88 @@ browser mid-redirect. The detail goes to the log and the audit trail
 Users: `POST /api/users` now takes `password` as **optional**. Omitted → NULL
 `password_hash` → an SSO-only account that cannot sign in with a password at all,
 not even through the admin escape hatch.
+
+## MCP and its OAuth server (Pro)
+
+Root routes, not under `/api` (MCP clients look for them at the origin). Design:
+ARCHITECTURE.md → MCP.
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | /.well-known/oauth-protected-resource (also `/mcp` suffix) | RFC 9728: `resource` = `<PUBLIC_URL>/mcp` |
+| GET | /.well-known/oauth-authorization-server | RFC 8414 |
+| POST | /oauth/register | RFC 7591, public clients only → 201 `{ client_id, … }` |
+| GET | /oauth/authorize | PKCE S256 required → 302 to `/oauth/consent?request=…` (or back to the client with `error`) |
+| POST | /oauth/token | form or JSON; `authorization_code` (+ `code_verifier`) or `refresh_token` (rotates) |
+| POST | /oauth/revoke | RFC 7009, always 200 |
+| POST | /mcp | JSON-RPC 2.0, `Authorization: Bearer`; `initialize`, `ping`, `tools/list`, `tools/call`. 401 + `WWW-Authenticate: Bearer resource_metadata=…` without a valid token |
+
+Scopes: `queues:read`, `queues:write` (a request for write; the consent screen decides).
+Tools: `list_connections`, `list_queues`, `get_queue`, `list_jobs`, `search_jobs`,
+`get_job`, `get_job_logs`, `list_schedulers`, `list_groups`, `request_destructive_action`
+(read); `add_job`, `retry_job`, `promote_job`, `remove_job`, `discard_job`,
+`bulk_job_action`, `promote_matching`, `retry_all`, `pause_queue`, `resume_queue`, `pause_group`, `resume_group`
+(write). Draining a group is `request_destructive_action` with `drain_group` and `group_id`:
+a link to the group page's confirmation dialog (`?confirm=drain`).
+
+## Flow maps (Pro, feature `flows`)
+
+Named diagrams of the queues one process goes through. Types and zod schemas in
+`@bullpane/shared` (`FlowMap*`, `createFlowMapSchema`, …). A node id is
+`${connectionId}:${queueName}`. Auth → `requireFeature("flows")` → role, like
+the other Pro routes. Not audited: maps are drawings, like `/flow-edges`.
+
+| Method | Path | Role | Body / query | Response |
+|---|---|---|---|---|
+| GET | /flow-maps | viewer | | `FlowMapsResponse`: every manual map (tree order: `parentId`, `position`) and every detected map of every connection |
+| POST | /flow-maps | operator | `createFlowMapSchema` | `FlowMap` (201). 404 when `parentId` does not exist |
+| GET | /flow-maps/:id | viewer | | `FlowMap` with live counts. Manual id, or a detected id `detected:<connectionId>:<rootQueue>` |
+| PATCH | /flow-maps/:id | operator | `updateFlowMapSchema` | `FlowMap`. 409 when moving a map under itself or one of its descendants |
+| DELETE | /flow-maps/:id | operator | | `{ ok }`. Its children move to its parent (the root if it had none); its nodes and edges are deleted |
+| POST | /flow-maps/:id/nodes | operator | `addFlowMapNodeSchema` | `FlowMap`. Idempotent. 404 when the connection does not exist |
+| DELETE | /flow-maps/:id/nodes/:nodeId | operator | | `FlowMap`. Also deletes the manual edges touching it |
+| PUT | /flow-maps/:id/layout | operator | `saveFlowMapLayoutSchema` | `{ ok }`. Unknown node ids are ignored |
+| POST | /flow-maps/:id/edges | operator | `createFlowMapEdgeSchema` | `FlowMap` (201). Adds missing ends as nodes. Idempotent on (from, to): updates the label. 409 when from = to |
+| PATCH | /flow-maps/:id/edges/:edgeId | operator | `updateFlowMapEdgeSchema` | `FlowMap` |
+| DELETE | /flow-maps/:id/edges/:edgeId | operator | | `FlowMap` |
+| POST | /flow-maps/:id/copy | operator | `{ name?, parentId? }` | `FlowMap` (201): a new manual map with the same nodes (and positions); works on detected and manual maps. Detected edges keep being drawn on it, they are not copied as manual ones |
+
+Every write on a detected map other than `copy` answers `409 detected_map_read_only`.
+
+**Detected maps.** Per connection, from the same sampled edges as
+`GET /connections/:id/flows` (cached 30 s): the connected components of the
+detected edges (direction ignored), one map per component of 2+ queues. Its
+root is the queue no edge leaves (the FlowProducer parent at the top); with
+several, the one with the most incoming evidence, then by name. Name = the root
+queue. A connection that is down or still sampling contributes nothing and sets
+`detectedComplete: false`.
+
+**Building a map's graph.** Counts come from one `getQueueStats` call per
+connection on the map (only the queues on it), and detected edges from that
+connection's cached sample, filtered to edges whose both ends are on the map.
+On a map, a detected edge points from the FlowProducer parent to the child
+queue (`from` = parent), the way the flow reads in code; the connection-level
+`FlowEdge` above keeps Redis' child → parent direction.
+A queue that is not discovered, or a connection that is down or deleted, gives
+a node with `missing: true` and empty counts, never a 5xx.
+
+**Connection deleted.** `ConnectionsService.remove()` deletes its nodes and the
+edges touching them on every map.
+
+### MCP tools
+
+All forward to the routes above with the caller's grant, like the other tools.
+`connection_id` may be omitted when the installation has exactly one connection.
+
+| Tool | Access | Route |
+|---|---|---|
+| `list_flow_maps` | read | GET /flow-maps |
+| `get_flow_map` (`map_id`) | read | GET /flow-maps/:id |
+| `create_flow_map` (`name`, `description?`, `parent_id?`) | write | POST /flow-maps |
+| `update_flow_map` (`map_id`, `name?`, `description?`, `parent_id?`) | write | PATCH /flow-maps/:id |
+| `delete_flow_map` (`map_id`) | write | DELETE /flow-maps/:id |
+| `add_flow_queue` (`map_id`, `queue`, `connection_id?`) | write | POST /flow-maps/:id/nodes |
+| `remove_flow_queue` (`map_id`, `queue`, `connection_id?`) | write | DELETE /flow-maps/:id/nodes/:nodeId |
+| `add_flow_edge` (`map_id`, `from_queue`, `to_queue`, `label?`, `from_connection_id?`, `to_connection_id?`) | write | POST /flow-maps/:id/edges |
+| `remove_flow_edge` (`map_id`, `edge_id`) | write | DELETE /flow-maps/:id/edges/:edgeId |
+| `copy_flow_map` (`map_id`, `name?`, `parent_id?`) | write | POST /flow-maps/:id/copy |

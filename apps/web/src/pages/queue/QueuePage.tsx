@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { ArrowDownUp, BarChart3, Bell, CalendarClock, ChevronDown, Eraser, Flame, Layers, Pause, Play, Plus, RotateCcw, ScrollText, Search, Trash2, Unplug, X } from "lucide-react";
-import { BULK_JOB_LIMIT, JOB_STATES, type BulkJobAction, type BulkJobActionResult, type JobState } from "@bullpane/shared";
+import { ArrowDownUp, BarChart3, Bell, CalendarClock, ChevronDown, Eraser, FastForward, Flame, Layers, Pause, Play, Plus, RotateCcw, ScrollText, Search, Trash2, Unplug, X } from "lucide-react";
+import { BULK_JOB_LIMIT, GROUP_WAITING_CAP, JOB_STATES, type BulkJobAction, type BulkJobActionResult, type JobState, type JobSummary, type SchedulerPromoteMode } from "@bullpane/shared";
 import { cn } from "@/lib/cn";
 import { routes } from "@/lib/routes";
 import { formatNumber } from "@/lib/format";
 import { useHotkey } from "@/lib/useHotkey";
 import { STATE_COLORS } from "@/lib/stateColors";
-import { useBulkJobAction, useJobAction, useJobSearch, useJobs, useQueue, useQueueAction, type JobActionKind } from "@/api/hooks";
+import { useBulkJobAction, useGroupJobs, useJobAction, useJobSearch, useJobs, useQueue, useQueueAction, type JobActionKind } from "@/api/hooks";
 import { useJobSelection } from "@/lib/useJobSelection";
 import { BulkActionBar, BulkResultPanel, bulkActionsFor } from "@/components/BulkActionBar";
 import { errorMessage } from "@/api/client";
@@ -24,17 +24,21 @@ import { Spinner } from "@/components/ui/Spinner";
 import { JobsTable } from "@/components/JobsTable";
 import { Pagination } from "@/components/Pagination";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
-import { AlertDialog } from "@/pages/alerts/AlertDialog";
+import { AlertDialog } from "@/ee/pages/alerts/AlertDialog";
 import { useEdition } from "@/edition/useEdition";
 import { QueueMetricsPanel } from "./QueueMetricsPanel";
 import { AddJobDialog } from "./AddJobDialog";
 import { CleanDialog } from "./CleanDialog";
 import { QueueSetupPanel } from "./QueueSetupPanel";
 import { SchedulersPanel } from "./SchedulersPanel";
-import { QueueAlerts, QueueAlertsPill, useQueueAlerts } from "./QueueAlerts";
+import { QueueAlerts, QueueAlertsPill, useQueueAlerts } from "@/ee/pages/queue/QueueAlerts";
 import { HIDE_HINT, HideIcon, useHideQueue } from "@/components/queues/hideQueue";
+import { GroupToolbar } from "./GroupToolbar";
+import { PromoteMatchingDialog } from "@/components/PromoteMatchingDialog";
 import { GroupCombobox } from "./GroupCombobox";
 import { PauseQueueDialog } from "@/components/queues/PauseQueueDialog";
+import { jobActionMessage } from "@/lib/jobActionMessage";
+import { PromoteSchedulerJobDialog, type SchedulerJobRef } from "@/components/PromoteSchedulerJobDialog";
 
 type StateTab = JobState | "groups" | "metrics" | "schedulers";
 
@@ -43,6 +47,9 @@ type StateTab = JobState | "groups" | "metrics" | "schedulers";
  * Redis-health work, so the metrics constant lives here instead of there.
  * Move it into `routes` once both branches have landed.
  */
+
+/** Group scans run up to this many bounded calls on their own before asking for "Scan more". */
+const GROUP_SCAN_ROUND = 10;
 
 function isJobState(s: string | null): s is JobState {
   return !!s && (JOB_STATES as readonly string[]).includes(s);
@@ -92,13 +99,24 @@ export function QueuePage({ view = "jobs" }: { view?: "jobs" | "metrics" | "sche
   const hideQueue = useHideQueue(connectionId);
   const isPro = !!summary.data && (summary.data.isPro || summary.data.groupsCount > 0);
   const searching = q.trim().length > 0;
-  const filteringByGroup = !searching && !!groupId;
+  // BullMQ Pro keeps a group's waiting jobs under the group, but its delayed,
+  // failed, completed and active ones in the queue-wide state keys. Those are
+  // found with the same bounded scan as the search, filtered by group in Lua.
+  const groupScan = !searching && !!groupId && state !== "waiting" && state !== "prioritized";
+  const filteringByGroup = !searching && !!groupId && !groupScan;
+  /** results come from the bounded scan (text search or a group outside waiting) */
+  const scanning = searching || groupScan;
   const showingMetrics = view === "metrics";
   const showingSchedulers = view === "schedulers";
   /** any non-jobs tab: the search box, group filter and job tables are hidden */
   const showingPanel = showingMetrics || showingSchedulers;
-  const jobs = useJobs(connectionId, queue, { state, page, pageSize, order, groupId: filteringByGroup ? groupId : undefined }, { enabled: !searching && !showingPanel });
-  const search = useJobSearch(connectionId, queue, { state, q: q.trim(), limit: 50 }, { enabled: searching && !showingPanel });
+  const jobs = useJobs(connectionId, queue, { state, page, pageSize, order, groupId: filteringByGroup ? groupId : undefined }, { enabled: !scanning && !showingPanel });
+  const search = useJobSearch(
+    connectionId,
+    queue,
+    { state, q: q.trim(), groupId: groupScan ? groupId : undefined, limit: 50 },
+    { enabled: scanning && !showingPanel },
+  );
   const jobAction = useJobAction(connectionId, queue);
   const queueAction = useQueueAction(connectionId, queue);
   const bulkAction = useBulkJobAction(connectionId, queue);
@@ -111,10 +129,26 @@ export function QueuePage({ view = "jobs" }: { view?: "jobs" | "metrics" | "sche
   const scanned = searchPages.reduce((sum, p) => sum + (p.scanned ?? 0), 0);
   const skippedLarge = searchPages.reduce((sum, p) => sum + (p.skippedLargePayloads ?? 0), 0);
   const searchTotal = searchPages.length ? searchPages[searchPages.length - 1].total : (summary.data?.counts?.[state] ?? 0);
+  // A group's jobs can be anywhere in a state of 500k: keep scanning on our own,
+  // one bounded call at a time, until a page of them shows up or a round of
+  // GROUP_SCAN_ROUND calls ends. "Scan more" starts the next round.
+  const [scanRoundStart, setScanRoundStart] = useState(0);
+  useEffect(() => setScanRoundStart(0), [groupId, state]);
+  useEffect(() => {
+    if (!groupScan || !search.hasNextPage || search.isFetching) return;
+    if (searchJobs.length >= 50 || searchPages.length - scanRoundStart >= GROUP_SCAN_ROUND) return;
+    void search.fetchNextPage();
+  }, [groupScan, search, searchJobs.length, searchPages.length, scanRoundStart]);
+  const scanMore = () => {
+    setScanRoundStart(searchPages.length);
+    void search.fetchNextPage();
+  };
 
   /** the jobs actually on screen — these are the ones "select all" acts on */
-  const visibleJobs = searching ? searchJobs : (jobs.data?.jobs ?? []);
+  const visibleJobs = scanning ? searchJobs : (jobs.data?.jobs ?? []);
   const visibleIds = useMemo(() => visibleJobs.map((j) => j.id), [visibleJobs]);
+  /** groups of the jobs on screen: the only way to offer a group whose jobs are all delayed */
+  const pageGroups = useMemo(() => [...new Set(visibleJobs.map((j) => j.groupId).filter((g): g is string => !!g))], [visibleJobs]);
   // Selection by jobId, not by index: the table repolls every 3 s and the rows
   // swap places. See lib/useJobSelection.ts.
   const selection = useJobSelection(visibleIds);
@@ -122,9 +156,33 @@ export function QueuePage({ view = "jobs" }: { view?: "jobs" | "metrics" | "sche
   const [pendingBulk, setPendingBulk] = useState<BulkJobAction | null>(null);
   const [confirmBulk, setConfirmBulk] = useState<BulkJobAction | null>(null);
   const [confirmRemoveJob, setConfirmRemoveJob] = useState<string | null>(null);
+  const [promoteScheduled, setPromoteScheduled] = useState<SchedulerJobRef | null>(null);
+  const [promoteMatchingOpen, setPromoteMatchingOpen] = useState(false);
 
   const [dialog, setDialog] = useState<null | "add" | "clean" | "drain" | "obliterate" | "retryAll" | "pause">(null);
   const [alertOpen, setAlertOpen] = useState(false);
+
+  /**
+   * `?confirm=drain|clean|obliterate` opens that confirmation dialog. It is the
+   * link the MCP hands back instead of running a destructive action itself, so a
+   * human reads the count and the queue name and clicks. The role check is the
+   * dialog's own (the server enforces it again); the param is dropped either way.
+   */
+  const confirmParam = sp.get("confirm");
+  useEffect(() => {
+    if (confirmParam !== "drain" && confirmParam !== "clean" && confirmParam !== "obliterate") return;
+    const allowed = confirmParam === "clean" ? isOperator : isAdmin;
+    if (allowed) setDialog(confirmParam);
+    else toast.error(`${confirmParam === "clean" ? "Cleaning" : confirmParam === "drain" ? "Draining" : "Obliterating"} a queue needs the ${confirmParam === "clean" ? "operator" : "admin"} role`);
+    setSp(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        next.delete("confirm");
+        return next;
+      },
+      { replace: true },
+    );
+  }, [confirmParam, isAdmin, isOperator, setSp]);
   const { has: hasFeature, gate } = useEdition();
   const [actionsOpen, setActionsOpen] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);
@@ -149,6 +207,26 @@ export function QueuePage({ view = "jobs" }: { view?: "jobs" | "metrics" | "sche
   useEffect(() => setDraft(q), [q]);
 
   const counts = summary.data?.counts;
+  // BullMQ Pro keeps a group's waiting jobs in the group's own list, not in `wait`,
+  // so counts.waiting is 0 on a queue full of grouped jobs. The waiting tab shows
+  // the group's total when filtered by one, else `wait` plus every group's jobs.
+  const groupWaitingTotal = useGroupJobs(connectionId, queue, groupId || undefined, { page: 1, pageSize: 1 }).data?.total;
+  const groupWaiting = summary.data?.groupWaiting;
+  const waitingTab = useMemo((): Pick<TabItem<StateTab>, "count" | "countSuffix" | "title"> => {
+    if (groupId) {
+      return { count: groupWaitingTotal ?? null, title: `Jobs waiting in group ${groupId} (its list and its prioritized jobs)` };
+    }
+    if (!groupWaiting || groupWaiting.jobs === 0) return { count: counts?.waiting ?? null };
+    const inWait = counts?.waiting ?? 0;
+    return {
+      count: inWait + groupWaiting.jobs,
+      countSuffix: groupWaiting.complete ? undefined : "+",
+      title:
+        `${formatNumber(inWait)} in the queue's wait list + ${formatNumber(groupWaiting.jobs)} waiting inside BullMQ Pro groups` +
+        (groupWaiting.complete ? "" : ` (the first ${formatNumber(GROUP_WAITING_CAP)} groups)`) +
+        ". Pick a group to list its jobs.",
+    };
+  }, [groupId, groupWaitingTotal, groupWaiting, counts?.waiting]);
   const tabs = useMemo<TabItem<StateTab>[]>(() => {
     const items: TabItem<StateTab>[] = [
       { value: "metrics", label: "Metrics", icon: <BarChart3 className="size-3.5" /> },
@@ -160,17 +238,21 @@ export function QueuePage({ view = "jobs" }: { view?: "jobs" | "metrics" | "sche
         label: STATE_COLORS[s].label,
         count: counts?.[s] ?? null,
         tone: STATE_COLORS[s].dotClass,
+        ...(s === "waiting" ? waitingTab : {}),
       })),
     ];
     if (summary.data?.isPro) items.push({ value: "groups", label: "Groups", count: summary.data.groupsCount, icon: <Layers className="size-3.5 text-pro" /> });
     return items;
-  }, [counts, summary.data?.isPro, summary.data?.groupsCount, summary.data?.schedulersCount]);
+  }, [counts, waitingTab, summary.data?.isPro, summary.data?.groupsCount, summary.data?.schedulersCount]);
 
-  const runSingle = (jobId: string, action: JobActionKind) => {
+  const runSingle = (jobId: string, action: JobActionKind, scheduler?: SchedulerPromoteMode) => {
     jobAction.mutate(
-      { jobId, action },
+      { jobId, action, scheduler },
       {
-        onSuccess: () => toast.success(`Job ${jobId}: ${action === "remove" ? "removed" : action === "retry" ? "retried" : action === "promote" ? "promoted" : "discarded"}`),
+        onSuccess: (result) => {
+          toast.success(jobActionMessage(jobId, action, result));
+          setPromoteScheduled(null);
+        },
         onError: (e) => toast.error(errorMessage(e)),
       },
     );
@@ -179,11 +261,16 @@ export function QueuePage({ view = "jobs" }: { view?: "jobs" | "metrics" | "sche
   /**
    * A single remove goes through a confirmation. It didn't before, and a wrong
    * click on a table that reorders every 3 s deleted the wrong job with no way
-   * back. `retry` and `promote` stay immediate: they are reversible.
+   * back. `retry` and `promote` stay immediate: they are reversible — except promoting
+   * a scheduler's job, which asks how (PromoteSchedulerJobDialog).
    */
-  const onAction = (jobId: string, action: JobActionKind) => {
+  const onAction = (jobId: string, action: JobActionKind, job?: JobSummary) => {
     if (action === "remove") {
       setConfirmRemoveJob(jobId);
+      return;
+    }
+    if (action === "promote" && job?.repeatJobKey) {
+      setPromoteScheduled({ id: job.id, repeatJobKey: job.repeatJobKey, delayedUntil: job.delayedUntil });
       return;
     }
     runSingle(jobId, action);
@@ -408,7 +495,7 @@ export function QueuePage({ view = "jobs" }: { view?: "jobs" | "metrics" | "sche
 
       {/* State tabs + group filter */}
       <div className="mb-3 flex flex-wrap items-end gap-3 border-b border-border">
-        <div className={cn("min-w-0 flex-1 transition-opacity", !showingPanel && (filteringByGroup || searching) && "opacity-50")} title={filteringByGroup && !showingPanel ? "Clear the group filter to browse by state" : undefined}>
+        <div className={cn("min-w-0 flex-1 transition-opacity", !showingPanel && searching && "opacity-50")}>
           <Tabs<StateTab>
             aria-label="Job state"
             items={tabs}
@@ -418,7 +505,7 @@ export function QueuePage({ view = "jobs" }: { view?: "jobs" | "metrics" | "sche
               else if (v === "metrics") navigate(routes.queueMetrics(connectionId, queue));
               else if (v === "schedulers") navigate(`/c/${encodeURIComponent(connectionId)}/q/${encodeURIComponent(queue)}/schedulers`);
               else if (showingPanel) navigate(routes.queue(connectionId, queue, v));
-              else update({ state: v, page: null, group: null });
+              else update({ state: v, page: null });
             }}
             className="!border-b-0"
             size="sm"
@@ -426,20 +513,29 @@ export function QueuePage({ view = "jobs" }: { view?: "jobs" | "metrics" | "sche
         </div>
         {isPro && !searching && !showingPanel && (
           <div className="flex items-center gap-2 pb-1.5">
-            {filteringByGroup && (
+            {(filteringByGroup || groupScan) && (
               <span className="text-[11px] text-fg-muted">
-                showing group <span className="font-mono text-fg">{groupId}</span>&apos;s waiting jobs
+                showing group <span className="font-mono text-fg">{groupId}</span>&apos;s {groupScan ? state : "waiting"} jobs
               </span>
             )}
-            <GroupCombobox connectionId={connectionId} queue={queue} value={groupId} onChange={(gid) => update({ group: gid || null, page: null })} />
+            <GroupCombobox
+              connectionId={connectionId}
+              queue={queue}
+              value={groupId}
+              onChange={(gid) => update({ group: gid || null, page: null })}
+              showWaiting={state === "waiting" || state === "prioritized"}
+              pageGroups={pageGroups}
+            />
           </div>
         )}
-        {!searching && !showingPanel && (
+        {!scanning && !showingPanel && (
           <Button size="sm" variant="ghost" className="mb-1" leftIcon={<ArrowDownUp />} onClick={() => update({ order: order === "desc" ? "asc" : "desc" })} title="Toggle order">
             {order === "desc" ? "Newest first" : "Oldest first"}
           </Button>
         )}
       </div>
+
+      {isPro && groupId && !searching && !showingPanel && <GroupToolbar connectionId={connectionId} queue={queue} groupId={groupId} />}
 
       {/* Metrics, schedulers, or the job tables */}
       {showingSchedulers ? (
@@ -453,16 +549,16 @@ export function QueuePage({ view = "jobs" }: { view?: "jobs" | "metrics" | "sche
         />
       ) : (
       <div className="card overflow-hidden">
-        {searching ? (
+        {scanning ? (
           <>
             <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border bg-surface-2/50 px-3 py-2 text-xs" role="status">
               <span className="flex items-center gap-2 text-fg-muted">
                 <Search className="size-3.5 text-fg-subtle" aria-hidden />
                 {search.isFetching && !search.isFetchingNextPage ? (
-                  <Spinner label={`Scanning ${state} jobs for "${q}"…`} />
+                  <Spinner label={searching ? `Scanning ${state} jobs for "${q}"…` : `Scanning ${state} jobs for group ${groupId}…`} />
                 ) : (
                   <>
-                    <span className="num font-semibold text-fg">{formatNumber(searchJobs.length)}</span> {searchJobs.length === 1 ? "match" : "matches"} · scanned <span className="num text-fg">{formatNumber(Math.min(scanned, searchTotal))}</span> of{" "}
+                    <span className="num font-semibold text-fg">{formatNumber(searchJobs.length)}</span> {searching ? (searchJobs.length === 1 ? "match" : "matches") : `${searchJobs.length === 1 ? "job" : "jobs"} of group ${groupId}`} · scanned <span className="num text-fg">{formatNumber(Math.min(scanned, searchTotal))}</span> of{" "}
                     <span className="num text-fg">{formatNumber(searchTotal)}</span> jobs in <span className={STATE_COLORS[state].textClass}>{state}</span>
                     {!search.hasNextPage && search.data && <span className="text-fg-subtle"> · whole state scanned</span>}
                     {skippedLarge > 0 && (
@@ -474,12 +570,17 @@ export function QueuePage({ view = "jobs" }: { view?: "jobs" | "metrics" | "sche
                 )}
               </span>
               <span className="flex items-center gap-2">
+                {searching && state === "delayed" && isOperator && (
+                  <Button size="sm" variant="secondary" leftIcon={<FastForward />} onClick={() => setPromoteMatchingOpen(true)} title="Promote every delayed job that contains the search, not only the loaded ones">
+                    Promote all matches
+                  </Button>
+                )}
                 {search.hasNextPage && (
-                  <Button size="sm" onClick={() => search.fetchNextPage()} loading={search.isFetchingNextPage}>
+                  <Button size="sm" onClick={scanMore} loading={search.isFetchingNextPage}>
                     Scan more
                   </Button>
                 )}
-                <Button size="sm" variant="ghost" leftIcon={<X />} onClick={clearSearch}>
+                <Button size="sm" variant="ghost" leftIcon={<X />} onClick={searching ? clearSearch : () => update({ group: null, page: null })}>
                   Clear
                 </Button>
               </span>
@@ -491,14 +592,20 @@ export function QueuePage({ view = "jobs" }: { view?: "jobs" | "metrics" | "sche
               The bar says so via `searching` so nobody thinks it took the whole
               queue.
             */}
-            {isOperator && <BulkActionBar selection={selection} state="mixed" queue={queue} actions={availableBulkActions} onRun={onBulk} pending={pendingBulk} searching />}
+            {isOperator && <BulkActionBar selection={selection} state={searching ? "mixed" : state} queue={queue} actions={availableBulkActions} onRun={onBulk} pending={pendingBulk} searching />}
             <JobsTable
               connectionId={connectionId}
               queue={queue}
               jobs={search.data ? searchJobs : undefined}
               loading={search.isLoading}
               error={search.error}
-              emptyText={search.hasNextPage ? "No matches yet — scan more to keep looking" : `No ${state} job contains "${q}"`}
+              emptyText={
+                search.hasNextPage
+                  ? "No matches yet — scan more to keep looking"
+                  : searching
+                    ? `No ${state} job contains "${q}"`
+                    : `No ${state} jobs in group ${groupId}`
+              }
               canOperate={isOperator}
               onAction={onAction}
               pendingId={jobAction.isPending ? jobAction.variables?.jobId : null}
@@ -508,13 +615,13 @@ export function QueuePage({ view = "jobs" }: { view?: "jobs" | "metrics" | "sche
                 clearSearch();
                 update({ group: gid, page: null });
               }}
-              highlight={q}
+              highlight={searching ? q : undefined}
               selection={isOperator ? selection : undefined}
             />
             <div className="flex items-center justify-between border-t border-border px-3 py-2 text-xs text-fg-subtle">
-              <span>Each scan reads a bounded slice of the state to keep Redis happy.</span>
+              <span>Each scan reads a bounded slice of the state to keep the database happy.</span>
               {search.hasNextPage && (
-                <Button size="sm" onClick={() => search.fetchNextPage()} loading={search.isFetchingNextPage}>
+                <Button size="sm" onClick={scanMore} loading={search.isFetchingNextPage}>
                   Scan more
                 </Button>
               )}
@@ -546,7 +653,13 @@ export function QueuePage({ view = "jobs" }: { view?: "jobs" | "metrics" | "sche
               jobs={jobs.data?.jobs}
               loading={jobs.isLoading}
               error={jobs.error}
-              emptyText={filteringByGroup ? `No waiting jobs in group ${groupId}` : "No jobs in this state"}
+              emptyText={
+                filteringByGroup
+                  ? `No waiting jobs in group ${groupId}`
+                  : state === "waiting" && (groupWaiting?.jobs ?? 0) > 0
+                    ? `The queue's wait list is empty: BullMQ Pro keeps ${formatNumber(groupWaiting?.jobs ?? 0)}${groupWaiting?.complete ? "" : "+"} waiting jobs inside groups. Pick a group above to list them.`
+                    : "No jobs in this state"
+              }
               canOperate={isOperator}
               onAction={onAction}
               pendingId={jobAction.isPending ? jobAction.variables?.jobId : null}
@@ -613,6 +726,12 @@ export function QueuePage({ view = "jobs" }: { view?: "jobs" | "metrics" | "sche
           setConfirmRemoveJob(null);
         }}
       />
+      <PromoteSchedulerJobDialog
+        job={promoteScheduled}
+        onClose={() => setPromoteScheduled(null)}
+        onPick={(mode) => promoteScheduled && runSingle(promoteScheduled.id, "promote", mode)}
+        pending={jobAction.isPending && jobAction.variables?.action === "promote" ? (jobAction.variables.scheduler ?? null) : null}
+      />
       <PauseQueueDialog
         queue={dialog === "pause" ? queue : null}
         onClose={() => setDialog(null)}
@@ -649,6 +768,9 @@ export function QueuePage({ view = "jobs" }: { view?: "jobs" | "metrics" | "sche
         loading={queueAction.isPending}
         onConfirm={() => runQueueAction({ action: "obliterate" }, `${queue} obliterated`)}
       />
+      {searching && (
+        <PromoteMatchingDialog open={promoteMatchingOpen} onClose={() => setPromoteMatchingOpen(false)} connectionId={connectionId} queue={queue} match={{ query: q.trim() }} />
+      )}
     </Page>
   );
 }

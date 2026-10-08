@@ -16,7 +16,10 @@
   ARGV[9]     byteBudget: stop the call once this many payload bytes were copied
               into Lua, even if `batch` hashes were not reached. The cursor comes
               back as usual and the UI keeps streaming.
-  ARGV[10..]  hash fields to HMGET (must include name, data, failedReason)
+  ARGV[10]    group id (BullMQ Pro), or "" for no group filter
+  ARGV[11]    the hash fields that may hold the group id, comma separated
+              (GROUP_ID_FIELDS in keys.ts); `opts.group.id` is the fallback
+  ARGV[12..]  hash fields to HMGET (must include name, data, failedReason)
 
   Returns { matches, nextCursor, scanned, total, skipped }
     matches     rows shaped exactly like getJobs.lua rows (…, dataTruncated, dataBytes)
@@ -30,6 +33,11 @@
   call independent of both queue size and payload size: at most `batch` hashes
   and at most `byteBudget` payload bytes. Before them a search over 1000 × 1 MB
   jobs kept Redis busy for 13 s; with them a call is a few milliseconds.
+
+  With a group id, a job outside the group costs one HMGET of its group fields
+  and opts (a few hundred bytes, counted in the byte budget) and its payload is
+  never read. Pro keeps a group's delayed, failed and completed jobs in the
+  queue-wide state keys, so this is the only way to list them per group.
 ]]
 local rcall = redis.call
 local key = KEYS[1]
@@ -42,9 +50,14 @@ local qprefix = ARGV[6]
 local previewBytes = tonumber(ARGV[7])
 local maxFieldBytes = tonumber(ARGV[8])
 local byteBudget = tonumber(ARGV[9])
+local group = ARGV[10]
+
+local groupFields = {}
+for f in string.gmatch(ARGV[11], "[^,]+") do groupFields[#groupFields + 1] = f end
+groupFields[#groupFields + 1] = "opts"
 
 local fields = {}
-for i = 10, #ARGV do fields[#fields + 1] = ARGV[i] end
+for i = 12, #ARGV do fields[#fields + 1] = ARGV[i] end
 local SKIP = "\0skip"
 
 local dataIdx, retIdx, nameIdx, reasonIdx = nil, nil, nil, nil
@@ -83,9 +96,25 @@ local function has(hay, needle)
   return hay and string.find(string.lower(hay), needle, 1, true) ~= nil
 end
 
+-- Exact group match: a group id field on the hash, else opts.group.id. opts is
+-- only decoded when it contains the id as plain text, so most misses cost a find.
+local function inGroup(hkey)
+  local vals = rcall("HMGET", hkey, unpack(groupFields))
+  local opts = vals[#vals]
+  if opts then bytes = bytes + #opts end
+  for i = 1, #vals - 1 do
+    if vals[i] then return vals[i] == group end
+  end
+  if not opts or not string.find(opts, group, 1, true) then return false end
+  local ok, decoded = pcall(cjson.decode, opts)
+  if not ok or type(decoded) ~= "table" or type(decoded.group) ~= "table" then return false end
+  local id = decoded.group.id
+  return id ~= nil and tostring(id) == group
+end
+
 for _, id in ipairs(ids) do
   scanned = scanned + 1
-  if string.sub(id, 1, 2) ~= "0:" then
+  if string.sub(id, 1, 2) ~= "0:" and (group == "" or inGroup(qprefix .. id)) then
     local hkey = qprefix .. id
     local dataBytes = dataIdx and rcall("HSTRLEN", hkey, "data") or 0
     local retBytes = retIdx and rcall("HSTRLEN", hkey, "returnvalue") or 0
@@ -129,11 +158,12 @@ for _, id in ipairs(ids) do
           break
         end
       end
-      if bytes >= byteBudget then
-        stoppedEarly = true
-        break
-      end
     end
+  end
+  -- Also after a group miss: those read opts, which counts against the budget.
+  if bytes >= byteBudget then
+    stoppedEarly = true
+    break
   end
 end
 

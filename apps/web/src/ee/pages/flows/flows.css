@@ -1,0 +1,149 @@
+/*
+ * Flow maps canvas. Lives with the page (lazy chunk) instead of styles.css.
+ *
+ * Everything that moves here is there to make a map read as it is built:
+ * a queue fades in, an arrow draws itself. Position changes glide too, but
+ * that is a JS tween in MapCanvas (a CSS transition on the node would leave
+ * the arrows behind, since React Flow draws them from the final position).
+ */
+
+.fm-canvas {
+  --fm-edge-manual: var(--accent);
+  --fm-edge-detected: var(--teal);
+}
+
+/* A queue appearing on the map. */
+.fm-node {
+  animation: fm-node-in 420ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  transition:
+    border-color 150ms,
+    box-shadow 150ms,
+    opacity 150ms;
+}
+@keyframes fm-node-in {
+  from {
+    opacity: 0;
+    transform: scale(0.86);
+  }
+  60% {
+    opacity: 1;
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* A queue that is new since the page opened gets one soft ring pulse. */
+.fm-node.fm-fresh {
+  animation:
+    fm-node-in 420ms cubic-bezier(0.22, 1, 0.36, 1) both,
+    fm-fresh 1600ms ease-out 200ms;
+}
+@keyframes fm-fresh {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 55%, transparent);
+  }
+  100% {
+    box-shadow: 0 0 0 14px transparent;
+  }
+}
+
+/* Handles: quiet until the node is hovered, obvious once it is. */
+.fm-canvas .react-flow__handle.fm-handle {
+  width: 10px;
+  height: 10px;
+  border: 2px solid var(--surface);
+  background: var(--border-strong);
+  transition:
+    background 120ms,
+    transform 120ms;
+}
+.fm-canvas.fm-editable .react-flow__node:hover .react-flow__handle.fm-handle,
+.fm-canvas .react-flow__handle.fm-handle.connectingfrom,
+.fm-canvas .react-flow__handle.fm-handle.connectingto {
+  background: var(--accent);
+  transform: translate(var(--fm-hx, 0), -50%) scale(1.25);
+}
+.fm-canvas .react-flow__handle-left.fm-handle {
+  --fm-hx: -50%;
+}
+.fm-canvas .react-flow__handle-right.fm-handle {
+  --fm-hx: 50%;
+}
+
+/* An arrow drawing itself, then (detected only) flowing. */
+.fm-edge-draw {
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  animation: fm-draw 640ms cubic-bezier(0.65, 0, 0.35, 1) forwards;
+}
+@keyframes fm-draw {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+.fm-edge-flow {
+  stroke-dasharray: 6 5;
+  animation: fm-flow 900ms linear infinite;
+}
+@keyframes fm-flow {
+  to {
+    stroke-dashoffset: -11;
+  }
+}
+.fm-arrowhead {
+  animation: fm-fade-in 200ms ease-out both;
+}
+.fm-edge-label {
+  animation: fm-fade-in 300ms ease-out 450ms both;
+}
+@keyframes fm-fade-in {
+  from {
+    opacity: 0;
+    transform: scale(0.9);
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* Connection line while dragging a new arrow. */
+.fm-canvas .react-flow__connection-path {
+  stroke: var(--fm-edge-manual);
+  stroke-width: 1.75;
+  stroke-dasharray: 5 4;
+}
+
+/* Sidebar: a map that appeared since the page opened. */
+.fm-tree-fresh {
+  animation: fm-tree-fresh 2400ms ease-out;
+}
+@keyframes fm-tree-fresh {
+  0%,
+  40% {
+    background: color-mix(in srgb, var(--accent) 18%, transparent);
+  }
+  100% {
+    background: transparent;
+  }
+}
+
+.fm-pop {
+  animation: dialog-in 120ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fm-node,
+  .fm-node.fm-fresh,
+  .fm-edge-label,
+  .fm-arrowhead,
+  .fm-edge-flow,
+  .fm-tree-fresh {
+    animation: none;
+  }
+  .fm-edge-draw {
+    animation: none;
+    stroke-dashoffset: 0;
+  }
+}

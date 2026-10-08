@@ -63,7 +63,7 @@ export class UsersService {
     }
     if (input.password !== undefined) patch.passwordHash = await hashPassword(input.password);
     /**
-     * Disable, never delete (see migrations/0007_user_disabled.sql). The guards
+     * Disable, never delete (see migrations/mysql/0007_user_disabled.sql). The guards
      * mirror the old delete: you cannot lock yourself out, and the last active
      * admin stays — a disabled admin counts for nothing here, so an install can
      * never end up with nobody able to manage users.

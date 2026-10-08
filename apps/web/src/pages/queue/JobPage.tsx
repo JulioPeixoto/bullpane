@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { ArrowUpToLine, Ban, Braces, ChevronLeft, GitBranch, Network, RotateCcw, ScrollText, Trash2 } from "lucide-react";
-import { AUDIT_ACTION_LABEL, type JobDetail } from "@bullpane/shared";
+import { AUDIT_ACTION_LABEL, type JobDetail, type SchedulerPromoteMode } from "@bullpane/shared";
 import { cn } from "@/lib/cn";
 import { queueNameFromKey, routes } from "@/lib/routes";
 import { formatDateTimeMs, formatDuration, formatNumber, safeJsonStringify } from "@/lib/format";
@@ -22,6 +22,8 @@ import { PageSpinner } from "@/components/ui/Spinner";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { StateBadge, STATE_META } from "@/components/StateBadge";
 import { useNow } from "@/lib/useNow";
+import { jobActionMessage } from "@/lib/jobActionMessage";
+import { PromoteSchedulerJobDialog } from "@/components/PromoteSchedulerJobDialog";
 import { useEdition } from "@/edition/useEdition";
 
 type Tab = "data" | "opts" | "returnvalue" | "error" | "logs" | "audit";
@@ -36,13 +38,16 @@ export function JobPage() {
   const [tab, setTab] = useState<Tab>("data");
   const [confirm, setConfirm] = useState<null | "remove" | "discard">(null);
 
-  const run = (kind: JobActionKind) =>
+  const [promoteScheduled, setPromoteScheduled] = useState(false);
+
+  const run = (kind: JobActionKind, scheduler?: SchedulerPromoteMode) =>
     action.mutate(
-      { jobId, action: kind },
+      { jobId, action: kind, scheduler },
       {
-        onSuccess: () => {
-          toast.success(`Job ${jobId} ${kind === "remove" ? "removed" : kind === "retry" ? "retried" : kind === "promote" ? "promoted" : "discarded"}`);
+        onSuccess: (result) => {
+          toast.success(jobActionMessage(jobId, kind, result));
           setConfirm(null);
+          setPromoteScheduled(false);
           if (kind === "remove") navigate(routes.queue(connectionId, queue));
         },
         onError: (e) => toast.error(errorMessage(e)),
@@ -112,7 +117,7 @@ export function JobPage() {
               </Button>
             )}
             {canPromote && (
-              <Button size="sm" leftIcon={<ArrowUpToLine />} onClick={() => run("promote")} loading={action.isPending && action.variables?.action === "promote"}>
+              <Button size="sm" leftIcon={<ArrowUpToLine />} onClick={() => (d.repeatJobKey ? setPromoteScheduled(true) : run("promote"))} loading={action.isPending && action.variables?.action === "promote"}>
                 Promote
               </Button>
             )}
@@ -212,6 +217,12 @@ export function JobPage() {
       {tab === "logs" && <LogsPanel connectionId={connectionId} queue={queue} jobId={jobId} initial={d.logs} total={d.logsCount} />}
       {tab === "audit" && <AuditPanel connectionId={connectionId} queue={queue} jobId={jobId} />}
 
+      <PromoteSchedulerJobDialog
+        job={promoteScheduled && d.repeatJobKey ? { id: d.id, repeatJobKey: d.repeatJobKey, delayedUntil: d.delayedUntil } : null}
+        onClose={() => setPromoteScheduled(false)}
+        onPick={(mode) => run("promote", mode)}
+        pending={action.isPending && action.variables?.action === "promote" ? (action.variables.scheduler ?? null) : null}
+      />
       <ConfirmDialog
         open={confirm === "remove"}
         onClose={() => setConfirm(null)}

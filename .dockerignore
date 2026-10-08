@@ -19,3 +19,8 @@ docs
 Dockerfile
 docker-compose*.yml
 private
+# local SQLite database — never bake someone's data into the image
+apps/server/data
+*.db
+*.db-wal
+*.db-shm

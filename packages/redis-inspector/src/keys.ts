@@ -191,6 +191,10 @@ export const JOB_SUMMARY_FIELDS = [
   // times the job was recovered from a stall. It is the only trace on the job that
   // it ever hung; `stalled` itself is an auxiliary SET, not a state.
   "stc",
+  // `rjk` = repeatJobKey, the scheduler that produced the job (bullmq's add scripts
+  // write it; moveStalledJobsToWait reads it). Same HMGET, no extra round trip; the
+  // UI needs it to ask how to promote a scheduler's delayed job.
+  "rjk",
   ...GROUP_ID_FIELDS,
 ] as const;
 

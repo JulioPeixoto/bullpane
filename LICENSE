@@ -1,3 +1,17 @@
+Copyright (c) 2026 Matheus Morett
+
+Bullpane is open core. Its source is licensed in two parts:
+
+* Every file inside a directory named `ee` (today `apps/server/src/ee/` and
+  `apps/web/src/ee/`) is licensed under the Bullpane Commercial License, in the
+  `LICENSE` file inside that directory. That is the code of the Pro features.
+* Everything else in this repository is licensed under the MIT license below.
+
+Releases up to and including 0.3.0 were published entirely under the MIT
+license, and those copies keep it.
+
+---
+
 MIT License
 
 Copyright (c) 2026 Matheus Morett

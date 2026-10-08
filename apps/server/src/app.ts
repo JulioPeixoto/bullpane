@@ -10,25 +10,30 @@ import fastifyCookie from "@fastify/cookie";
 import fastifyStatic from "@fastify/static";
 import type { InspectorPool } from "@bullpane/redis-inspector";
 import Fastify, { type FastifyInstance, type FastifyServerOptions, LogController } from "fastify";
-import { AlertsEngine } from "./alerts/engine";
 import { basicAuthHook } from "./auth/basic";
+import { AlertsEngine } from "./ee/alerts/engine";
 import { SessionService } from "./auth/sessions";
 import { type Config, SERVER_ROOT } from "./config";
 import type { AppContext } from "./context";
 import type { Db } from "./db";
 import { registerErrorHandling } from "./plugins/errors";
 import { apiPlugin } from "./routes";
-import { AlertsService } from "./services/alerts";
-import { AuditService } from "./services/audit";
+import { AlertsService } from "./ee/services/alerts";
+import { AuditService } from "./ee/services/audit";
 import { ConnectionsService } from "./services/connections";
 import { EditionService } from "./services/edition";
 import { HttpLicenseClient } from "./services/license-client";
 import { AttentionService } from "./services/attention";
 import { DrizzleSettingsStore } from "./services/settings-store";
-import { FlowsService } from "./services/flows";
-import { FoldersService } from "./services/folders";
+import { FlowMapsService } from "./ee/services/flowMaps";
+import { FlowsService } from "./ee/services/flows";
+import { FoldersService } from "./ee/services/folders";
 import { HealthService } from "./services/health";
-import { SsoService } from "./services/sso";
+import { SsoService } from "./ee/services/sso";
+import { McpCallBridge } from "./ee/mcp/internal";
+import { mcpRootRoutes } from "./ee/mcp/routes";
+import { McpService } from "./ee/mcp/service";
+import { DrizzleMcpStore, type McpStore } from "./ee/mcp/store";
 import { UsersService } from "./services/users";
 
 export interface BuildAppOptions {
@@ -38,6 +43,8 @@ export interface BuildAppOptions {
   logger?: FastifyServerOptions["logger"];
   /** serve WEB_DIST when it exists (default true) */
   serveWeb?: boolean;
+  /** tests pass a MemoryMcpStore; production uses MySQL */
+  mcpStore?: McpStore;
 }
 
 export function readVersion(): string {
@@ -77,9 +84,11 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
   const health = new HealthService(connections);
   connections.onEvict((id) => health.evict(id));
   const flows = new FlowsService(db, connections);
+  const flowMaps = new FlowMapsService(db, connections, flows);
   const alerts = new AlertsService(db, connections, folders);
   const audit = new AuditService(db, app.log);
   const attention = new AttentionService(new DrizzleSettingsStore(db));
+  const mcp = new McpService({ store: opts.mcpStore ?? new DrizzleMcpStore(db), settings: new DrizzleSettingsStore(db), config });
   const alertsEngine = new AlertsEngine({ config, alerts, connections, folders, edition, log: app.log });
 
   const ctx: AppContext = {
@@ -93,11 +102,14 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
     folders,
     health,
     flows,
+    flowMaps,
     alerts,
     alertsEngine,
     audit,
     attention,
     sso,
+    mcp,
+    mcpCalls: new McpCallBridge(),
     version,
   };
   app.decorate("ctx", ctx);
@@ -124,6 +136,9 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
   });
 
   await app.register(apiPlugin, { prefix: "/api" });
+  // MCP + its OAuth server live at the root: clients look for /.well-known/* at
+  // the origin and for /mcp where the user pasted it. See ee/mcp/routes.ts.
+  await app.register(mcpRootRoutes);
 
   const serveWeb = opts.serveWeb !== false && existsSync(path.join(config.webDist, "index.html"));
   if (serveWeb) {
@@ -135,6 +150,12 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
       cacheControl: true,
       maxAge: "1h",
       immutable: false,
+      // index.html names the hashed bundles of the running version. Cached for
+      // an hour, it survives an upgrade and asks for bundles that are gone: a
+      // blank page until the cache expires. Everything else keeps the 1 h.
+      setHeaders(reply, filePath) {
+        if (path.basename(filePath) === "index.html") reply.header("cache-control", "no-cache");
+      },
     });
   }
 
@@ -144,7 +165,8 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
       return reply.status(404).send({ error: "not_found", message: `Route ${request.method} ${request.url} not found` });
     }
     if (serveWeb && (request.method === "GET" || request.method === "HEAD")) {
-      return reply.header("cache-control", "no-cache").sendFile("index.html");
+      // `cacheControl: false`: otherwise the plugin's 1 h max-age replaces this header.
+      return reply.header("cache-control", "no-cache").sendFile("index.html", { cacheControl: false });
     }
     return reply.status(404).send({ error: "not_found", message: "Not found" });
   });

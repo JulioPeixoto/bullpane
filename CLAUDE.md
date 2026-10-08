@@ -7,7 +7,7 @@ instructions (voice, chapters, YODA) when working here.
 Self-hosted dashboard for BullMQ and BullMQ Pro, sold as **Bullpane** (bullpane.com).
 Metabase model: free edition does everything bull-board does and has NO login at all;
 Pro (USD 39/month or 390/year, one installation) unlocks Alerts, Users & roles, Folders,
-Flows, Audit log and SSO.
+Flows, Audit log, SSO and MCP.
 Pro keys are sold through Creem and activated via the license API in `apps/license-api`
 (Cloudflare Worker, api.bullpane.com) which signs 7-day Ed25519 leases; hand-signed
 offline keys still exist for air-gapped customers. A public live demo runs in
@@ -15,7 +15,8 @@ offline keys still exist for air-gapped customers. A public live demo runs in
 
 Read `docs/ARCHITECTURE.md` and `docs/API.md` before changing anything. The shared
 contract lives in `packages/shared/src/index.ts`; the Redis contract in
-`packages/redis-inspector/src/types.ts`.
+`packages/inspector/src/types.ts` (implemented by `redis-inspector` and, for BullMQ 6's
+Postgres backend, `pg-inspector`; see `docs/POSTGRES.md`).
 
 ## Non-negotiables
 - **Performance is king.** No `KEYS`. No unbounded scans. One round trip per read
@@ -25,10 +26,19 @@ contract lives in `packages/shared/src/index.ts`; the Redis contract in
 - Pro features are gated in exactly two places: `requireFeature()` on the server
   (HTTP 402 `pro_required`) and `useEdition()` on the web. Never hide a Pro feature;
   show it locked with the upsell.
+- Code that implements a Pro feature lives in `apps/server/src/ee/` or `apps/web/src/ee/`
+  (Bullpane Commercial License); everything else is MIT. New Pro code goes in `ee/`
+  from the first commit. See "Where Pro code lives" in `docs/ARCHITECTURE.md`.
 - DTOs and zod schemas live in `@bullpane/shared`. Do not redefine them.
 - Never log job data or Redis URLs with passwords.
+- Postgres (BullMQ 6): every job query pins `state` (partial indexes), one statement
+  per read, and the dashboard never runs BullMQ's migrations. Every connection has a
+  `kind`; a new Inspector method needs both implementations.
 - Must keep working with BullMQ Pro (groups/batches). Pro key names live in
-  `packages/redis-inspector/src/keys.ts` only.
+  `packages/redis-inspector/src/keys.ts` only. Writes on Pro queues go through
+  BullMQ Pro's own API when the customer installed it (optional, never bundled), and
+  writes core bullmq would get wrong on a group are refused otherwise
+  (`bullmqPro.ts`, docs/BULLMQ-PRO.md).
 
 ## Language
 

@@ -45,11 +45,11 @@ export const FEATURE_COPY: Record<ProFeature, FeatureCopy> = {
   },
   flows: {
     title: "Flows",
-    tagline: "See how queues feed each other, detected from BullMQ flow parents plus your own edges.",
+    tagline: "Named maps of the queues each process goes through, with live counts, drawn by you or by your AI client.",
     bullets: [
-      "Edges detected from job parent references with evidence counts",
-      "Manual edges for producer → consumer relationships Redis cannot see",
-      "Auto-layout graph with live counts and paused state per queue",
+      "Flow maps across connections: one Redis to another, Redis to Postgres",
+      "Maps detected from BullMQ FlowProducer parents, with evidence counts",
+      "Draw arrows by hand or over MCP; the map updates live while it is drawn",
     ],
   },
   sso: {
@@ -59,6 +59,15 @@ export const FEATURE_COPY: Record<ProFeature, FeatureCopy> = {
       "OIDC (Google Workspace, Entra ID, Okta, Keycloak, Authentik) and SAML 2.0",
       "Accounts stay pre-provisioned: the IdP proves identity, you still assign the role",
       "Require SSO for the team while admins keep a password way in",
+    ],
+  },
+  mcp: {
+    title: "MCP",
+    tagline: "Ask your AI why the payments queue is failing, and let it retry the jobs — as you, with your role.",
+    bullets: [
+      "Claude or any MCP client with OAuth; sign in with your Bullpane login or SSO",
+      "Read or read & write: the admin sets the ceiling, a viewer can never write",
+      "Every action lands in the audit log; drain and obliterate stay in the dashboard",
     ],
   },
 };
@@ -71,4 +80,5 @@ export const FEATURE_ROUTE: Record<ProFeature, string> = {
   audit: "/audit",
   // SSO has no page of its own: it is a tab inside Settings.
   sso: "/settings/sso",
+  mcp: "/settings/mcp",
 };

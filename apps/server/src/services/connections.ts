@@ -1,8 +1,10 @@
 /**
- * Redis connections: CRUD in MySQL + resolution to an Inspector from the pool,
+ * Connections (Redis, or Postgres since BullMQ 6): CRUD in the app database +
+ * resolution to an Inspector from the pool,
  * with a per-connection status cache (ping at most every 10 s).
  */
 import {
+  connectionIssues,
   type ConnectionScheduler,
   type ConnectionSchedulersPage,
   type ConnectionStatus,
@@ -14,11 +16,21 @@ import {
   type UpdateConnectionInput,
 } from "@bullpane/shared";
 import type { Inspector, InspectorPool, PingResult } from "@bullpane/redis-inspector";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, or } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import type { Db } from "../db";
-import { alerts, connections, type ConnectionRow, flowEdges, folderQueues, hiddenQueues, users } from "../db/schema";
-import { notFound } from "../plugins/errors";
+import {
+  alerts,
+  connections,
+  type ConnectionRow,
+  flowEdges,
+  flowMapEdges,
+  flowMapNodes,
+  folderQueues,
+  hiddenQueues,
+  users,
+} from "../db/schema";
+import { notFound, validation } from "../plugins/errors";
 import { withRedis } from "./inspector-errors";
 
 export const STATUS_TTL_MS = 10_000;
@@ -51,6 +63,7 @@ export function toConnectionDto(row: ConnectionRow, status?: ConnectionStatus): 
   const dto: RedisConnection = {
     id: row.id,
     name: row.name,
+    kind: row.kind,
     url: redactRedisUrl(row.url),
     prefix: row.prefix,
     cluster: row.cluster,
@@ -128,6 +141,7 @@ export class ConnectionsService {
     await this.db.insert(connections).values({
       id,
       name: input.name,
+      kind: input.kind,
       url: input.url,
       prefix: input.prefix,
       cluster: input.cluster,
@@ -169,7 +183,11 @@ export class ConnectionsService {
   }
 
   async update(id: string, input: UpdateConnectionInput): Promise<RedisConnection> {
-    await this.getRow(id);
+    const current = await this.getRow(id);
+    // The schema cannot check a URL or schema name on its own: what is valid
+    // depends on the stored kind, which an update does not carry.
+    const issue = connectionIssues({ ...input, kind: current.kind })[0];
+    if (issue) throw validation(issue.message, [{ path: [issue.path], message: issue.message }]);
     const patch: Partial<typeof connections.$inferInsert> = {};
     if (input.name !== undefined) patch.name = input.name;
     if (input.url !== undefined) patch.url = input.url;
@@ -195,12 +213,17 @@ export class ConnectionsService {
     await this.db.delete(hiddenQueues).where(eq(hiddenQueues.connectionId, id));
     await this.db.delete(alerts).where(eq(alerts.connectionId, id));
     await this.db.delete(flowEdges).where(eq(flowEdges.connectionId, id));
+    // Flow maps span connections: only this side's queues leave the maps, and
+    // with them every edge that touched them (from or to). The maps stay.
+    await this.db.delete(flowMapEdges).where(or(eq(flowMapEdges.fromConnectionId, id), eq(flowMapEdges.toConnectionId, id)));
+    await this.db.delete(flowMapNodes).where(eq(flowMapNodes.connectionId, id));
     await this.db.delete(connections).where(eq(connections.id, id));
   }
 
   inspectorFor(row: ConnectionRow): Inspector {
     return this.pool.get({
       id: row.id,
+      kind: row.kind,
       url: row.url,
       prefix: row.prefix,
       cluster: row.cluster,
@@ -252,7 +275,7 @@ export class ConnectionsService {
   //       (GET /connections/:id/queues/:queue is untouched).
   // Hiding is about the LIST, not about switching the queue off.
   //
-  // Scope is the instance, not the user — see migrations/0003_hidden_queues.sql.
+  // Scope is the instance, not the user — see migrations/mysql/0003_hidden_queues.sql.
   // -------------------------------------------------------------------------
 
   /** Names hidden on this connection, as a Set for O(1) filtering. */

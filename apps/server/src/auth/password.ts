@@ -8,7 +8,7 @@ export function hashPassword(password: string): Promise<string> {
 
 /**
  * `hash` is nullable because an SSO-only account has no password (see
- * migrations/0005_sso.sql). A NULL hash is refused HERE rather than at each
+ * migrations/mysql/0005_sso.sql). A NULL hash is refused HERE rather than at each
  * call site, so no future login path can accidentally treat "has no password"
  * as "any password will do" — the failure mode that would turn SSO-only
  * accounts into open doors.

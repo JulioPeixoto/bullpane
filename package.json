@@ -1,9 +1,9 @@
 {
   "name": "bullpane",
-  "version": "0.3.0",
+  "version": "0.7.1",
   "private": true,
   "description": "A fast, self-hosted dashboard for BullMQ and BullMQ Pro. Free core, Pro subscription for team features.",
-  "license": "MIT",
+  "license": "SEE LICENSE IN LICENSE",
   "packageManager": "pnpm@10.4.1",
   "engines": {
     "node": ">=20"
@@ -18,7 +18,9 @@
     "start": "pnpm --filter @bullpane/server start",
     "license:keygen": "tsx scripts/gen-license.ts keygen",
     "license:sign": "tsx scripts/gen-license.ts sign",
-    "demo": "docker compose -f docker-compose.demo.yml up --build"
+    "demo": "docker compose -f docker-compose.demo.yml up --build",
+    "smoke:postgres": "pnpm --filter @bullpane/smoke smoke:postgres",
+    "smoke:redis": "pnpm --filter @bullpane/smoke smoke:redis"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260907.1",

@@ -1,13 +1,21 @@
 # Bullpane — production-ish. Bring your own Redis: you add connections
-# to your BullMQ Redis instances from the dashboard after first-run setup.
+# to your BullMQ Redis instances from the dashboard.
 #
 #   cp .env.example .env   # SESSION_SECRET only matters once you unlock Pro (login)
 #   docker compose up -d
 #   open http://localhost:3000
 #
-# External MySQL instead of the bundled one: set DATABASE_URL in .env to your
-# instance (mysql://user:pass@host:3306/db), delete the `mysql` service below
-# and the `depends_on` block on `app`.
+# The dashboard's own data lives in SQLite on the `bullpane-data` volume — no
+# database to run.
+#
+# Want MySQL instead (more than one replica, or you just prefer it)? Two lines
+# in .env, nothing to edit here:
+#
+#   COMPOSE_PROFILES=mysql                                   # also start the bundled MySQL
+#   DATABASE_URL=mysql://bullpane:bullpane@mysql:3306/bullpane
+#
+# Your own MySQL / RDS: set only DATABASE_URL to it, leave COMPOSE_PROFILES out.
+
 services:
   app:
     build:
@@ -20,7 +28,8 @@ services:
     environment:
       HOST: 0.0.0.0
       PORT: 3000
-      DATABASE_URL: ${DATABASE_URL:-mysql://bullpane:bullpane@mysql:3306/bullpane}
+      # Empty = SQLite in /data. mysql://… = MySQL (see the header).
+      DATABASE_URL: ${DATABASE_URL:-}
       # Random 32+ char string; signs the session cookie. Do not ship the placeholder.
       SESSION_SECRET: ${SESSION_SECRET:-change-me-to-a-long-random-string}
       PUBLIC_URL: ${PUBLIC_URL:-http://localhost:3000}
@@ -31,11 +40,14 @@ services:
       BULLPANE_ALERTS_INTERVAL: ${BULLPANE_ALERTS_INTERVAL:-15}
       BULLPANE_AUDIT_RETENTION_DAYS: ${BULLPANE_AUDIT_RETENTION_DAYS:-365}
       BULLPANE_JOB_PREVIEW_BYTES: ${BULLPANE_JOB_PREVIEW_BYTES:-2048}
-    depends_on:
-      mysql:
-        condition: service_healthy
+    volumes:
+      - bullpane-data:/data
+    # No depends_on on mysql: it may not be running at all (profile off), and
+    # the app already retries MySQL for 60 s and restarts if it is not up yet.
 
   mysql:
+    # Only started with COMPOSE_PROFILES=mysql (or `docker compose --profile mysql up`).
+    profiles: ["mysql"]
     image: mysql:8.4
     restart: unless-stopped
     command: --mysql-native-password=ON --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
@@ -48,6 +60,8 @@ services:
       # Exposed so `pnpm dev` on the host can reach it; drop in production.
       - "${MYSQL_PORT:-3306}:3306"
     volumes:
+      # Same volume name as before SQLite became the default, so an existing
+      # install that turns the profile on finds its data where it left it.
       - mysql-data:/var/lib/mysql
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-proot"]
@@ -57,4 +71,5 @@ services:
       start_period: 15s
 
 volumes:
+  bullpane-data:
   mysql-data:

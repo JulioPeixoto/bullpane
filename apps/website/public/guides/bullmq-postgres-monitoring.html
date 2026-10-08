@@ -1,0 +1,131 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Monitoring BullMQ on Postgres</title><meta name="description" content="BullMQ 6 can keep its queues in PostgreSQL. How to monitor them: the tables BullMQ creates, the SQL behind job counts, the oldest waiting job, stalled jobs, paused queues and connected workers, the event table that grows forever, and how to read without slowing your workers. Checked against BullMQ 6.3.4 on Postgres 16."><meta property="og:title" content="Monitoring BullMQ on Postgres"><meta property="og:type" content="article"><meta property="og:url" content="https://bullpane.com/guides/bullmq-postgres-monitoring"><meta property="og:image" content="https://bullpane.com/shots/overview.jpg"><meta name="twitter:card" content="summary_large_image"><meta property="og:description" content="BullMQ 6 on PostgreSQL: the SQL behind every queue signal, the event table that never shrinks, and reading without slowing the workers."><link rel="canonical" href="https://bullpane.com/guides/bullmq-postgres-monitoring"><link rel="icon" href="/favicon.ico" sizes="48x48"><link rel="icon" href="/favicon.svg" type="image/svg+xml"><link rel="apple-touch-icon" href="/apple-touch-icon.png"><link rel="stylesheet" href="/styles.css">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "TechArticle",
+      "headline": "Monitoring BullMQ on Postgres",
+      "url": "https://bullpane.com/guides/bullmq-postgres-monitoring",
+      "datePublished": "2026-10-04",
+      "dateModified": "2026-10-04",
+      "author": { "@type": "Person", "name": "Matheus Morett", "url": "https://madmorett.com/" },
+      "about": [
+        { "@type": "SoftwareApplication", "name": "BullMQ", "url": "https://bullmq.io/" },
+        { "@type": "SoftwareApplication", "name": "PostgreSQL", "url": "https://www.postgresql.org/" }
+      ],
+      "proficiencyLevel": "Intermediate"
+    },
+    {
+      "@type": "FAQPage",
+      "mainEntity": [
+        { "@type": "Question", "name": "Where does BullMQ store jobs in Postgres?", "acceptedAnswer": { "@type": "Answer", "text": "In the schema passed to the Postgres backend (bullmq by default). Jobs live in the job table, one row per job with a state column (waiting, active, delayed, completed, failed, waiting-children) and a partial index per state. Events go to the event table, metrics to metrics, queue flags such as paused to meta." } },
+        { "@type": "Question", "name": "How do I count BullMQ jobs per state in Postgres?", "acceptedAnswer": { "@type": "Answer", "text": "SELECT state, count(*) FROM bullmq.job WHERE queue = 'emails' GROUP BY state. Each state is counted on its partial index, an index-only scan when autovacuum keeps the visibility map current. Unlike Redis, a count is real work: on a state with millions of jobs, do not refresh it every few seconds." } },
+        { "@type": "Question", "name": "Why does the BullMQ event table keep growing on Postgres?", "acceptedAnswer": { "@type": "Answer", "text": "BullMQ 6's trimEvents() is not implemented on the Postgres backend, so nothing deletes from the event table. It gets a few rows per job (about 4 per job that is added and completed). Delete old rows on a schedule." } },
+        { "@type": "Question", "name": "How do I see which BullMQ workers are connected to Postgres?", "acceptedAnswer": { "@type": "Answer", "text": "Each worker names its LISTEN connection after the queue, <queue> or <queue>:w:<name>, in application_name. Count them in pg_stat_activity. Workers that connect through PgBouncer or another pooler appear under the pooler's connections instead." } }
+      ]
+    }
+  ]
+}
+</script>
+</head><body>
+<nav class="nav"><div class="wrap"><a class="logo" href="/"><svg viewBox="0 0 32 32" width="24" height="24" aria-hidden="true"><rect width="32" height="32" rx="7" fill="#171b24"/><path d="M8 8h9a5 5 0 0 1 0 10H8zM8 18h10a5 5 0 0 1 0 10H8z" fill="#f5a524"/></svg>Bullpane</a><div class="nav-links"><a href="/">Home</a><a href="/guides/">Guides</a><a href="/#pricing">Pricing</a><a href="/changelog">Changelog</a></div></div></nav><main class="legal"><div class="wrap">
+<h1>Monitoring BullMQ on Postgres</h1>
+<p class="updated">Checked against BullMQ 6.3.4 on PostgreSQL 16, 4 October 2026 · <a href="/guides/">All guides</a> · On Redis: <a href="/guides/bullmq-monitoring-dashboard">How to build a dashboard to monitor BullMQ</a></p>
+
+<p class="lead-sm">BullMQ 6 can keep its queues in PostgreSQL instead of Redis. The queues behave the same; monitoring them does not. There is no <code>LLEN</code>: a count is a real count. There is a table that never shrinks. And the dashboard reads from the same database your workers write to, so a careless query costs them throughput.</p>
+
+<div class="callout">
+<p><strong>Short answer.</strong> Everything is in one schema (<code>bullmq</code> by default): jobs in <code>job</code> with a <code>state</code> column and a partial index per state, events in <code>event</code>, totals in <code>metrics</code>, the paused flag in <code>meta</code>. Read with a read-only role, a statement timeout and no parallel query; refresh big counts slowly; and delete old rows from <code>event</code> on a schedule, because BullMQ never does.</p>
+</div>
+
+<h2>What BullMQ creates</h2>
+<p><code>runMigrations()</code>, or a worker started with <code>migrate: true</code>, creates these tables in the schema you pass to <code>createPostgresBackend</code>:</p>
+<div class="table-wrap">
+<table>
+<thead><tr><th>Table</th><th>What is in it</th></tr></thead>
+<tbody>
+<tr><td><code>job</code></td><td>One row per job: <code>queue</code>, <code>id</code>, <code>state</code>, <code>data</code>, timestamps (<code>added_at_ms</code>, <code>process_at_ms</code>, <code>processed_at_ms</code>, <code>finished_at_ms</code>), the lock (<code>locked_until_ms</code>) and <code>stalled_count</code>. A partial index per state.</td></tr>
+<tr><td><code>event</code></td><td>The event stream (<code>QueueEvents</code>). Never trimmed: see below.</td></tr>
+<tr><td><code>metrics</code></td><td>Per queue and kind (<code>completed</code>, <code>failed</code>): a running <code>count</code> and per-minute deltas.</td></tr>
+<tr><td><code>meta</code></td><td>Queue flags, <code>paused</code> among them.</td></tr>
+<tr><td><code>scheduler</code>, <code>job_log</code>, <code>job_dependency</code>, <code>dedup</code>, <code>rate_limit</code></td><td>Job schedulers, job logs, flows, deduplication, rate limiting.</td></tr>
+</tbody>
+</table>
+</div>
+<p>The <code>state</code> values are <code>waiting</code>, <code>active</code>, <code>delayed</code>, <code>completed</code>, <code>failed</code> and <code>waiting-children</code>. Prioritized jobs are <code>waiting</code> rows with a <code>priority</code> above 0, and pausing a queue does not move rows: it sets a flag.</p>
+
+<h2>The signals, in SQL</h2>
+<p>The BullMQ API (<code>getJobCounts</code>, <code>getMetrics</code>, <code>getWorkersCount</code>) works on Postgres too, and the <a href="/guides/bullmq-backlog-alerts">backlog checker</a> runs unchanged on it. SQL is for a Grafana panel, a <code>psql</code> session during an incident, or a dashboard that should not load BullMQ at all.</p>
+<p><strong>Jobs per state.</strong> Each state is counted on its own partial index, an index-only scan:</p>
+<pre><code>SELECT state, count(*) AS jobs
+FROM bullmq.job
+WHERE queue = 'emails'
+GROUP BY state;</code></pre>
+<p><strong>Oldest waiting job</strong>, the delay your users feel. A delayed job is ready from <code>process_at_ms</code>, everything else from <code>added_at_ms</code>:</p>
+<pre><code>SELECT id,
+       (extract(epoch FROM now()) * 1000)::bigint
+         - greatest(added_at_ms, coalesce(process_at_ms, 0)) AS waited_ms
+FROM bullmq.job
+WHERE queue = 'emails' AND state = 'waiting'
+ORDER BY greatest(added_at_ms, coalesce(process_at_ms, 0))
+LIMIT 1;</code></pre>
+<p>Through the API, do not use <code>getJobs(["wait"], 0, 0, true)</code> for this: in 6.3.4 the Postgres backend ignores <code>asc</code> and returns the newest job. The last index of the default order is the oldest one on both backends:</p>
+<pre><code>const { wait } = await queue.getJobCounts("wait");
+const [oldest] = wait &gt; 0 ? await queue.getJobs(["wait"], wait - 1, wait - 1) : [];</code></pre>
+<p><strong>Stalled jobs</strong>: active jobs whose lock ran out. On Redis this is a SET between two rounds of a check; here it is a column (<a href="/guides/bullmq-stalled-jobs">what stalled means</a>):</p>
+<pre><code>SELECT count(*) AS stalled
+FROM bullmq.job
+WHERE queue = 'emails' AND state = 'active'
+  AND locked_until_ms &lt; (extract(epoch FROM now()) * 1000);</code></pre>
+<p><strong>Paused.</strong> Paused jobs stay <code>waiting</code> in the table, so the SQL counts above do not know the queue is paused. Check the flag before alerting on a backlog:</p>
+<pre><code>SELECT value = '1' AS paused FROM bullmq.meta WHERE queue = 'emails' AND field = 'paused';</code></pre>
+<p><strong>Throughput.</strong> <code>metrics.count</code> is the running total of finished jobs, collected only by workers created with <code>metrics</code>. Sample it twice and divide by the time between samples:</p>
+<pre><code>SELECT kind, count FROM bullmq.metrics WHERE queue = 'emails';</code></pre>
+<p><strong>Connected workers.</strong> Each worker names its LISTEN connection after the queue, <code>emails</code> or <code>emails:w:&lt;name&gt;</code>:</p>
+<pre><code>SELECT count(*) AS workers
+FROM pg_stat_activity
+WHERE datname = current_database()
+  AND (application_name = 'emails' OR application_name LIKE 'emails:w:%');</code></pre>
+<p>Two blind spots: workers that connect through PgBouncer or another pooler show up as the pooler's connections, so the count can read 0 while they work; and the name has no schema in it, so two schemas with a queue of the same name share the count.</p>
+
+<h2>The table that never shrinks</h2>
+<p>BullMQ 6's <code>trimEvents()</code> is not implemented on Postgres, and nothing else deletes from <code>event</code>. In our test, 100 jobs added and completed left 401 rows: about four per job. A queue doing a million jobs a day adds around four million rows a day, forever. Watch its size and delete old rows on a schedule:</p>
+<pre><code>SELECT pg_size_pretty(pg_total_relation_size('bullmq.event'));
+
+DELETE FROM bullmq.event
+WHERE created_at_ms &lt; (extract(epoch FROM now() - interval '7 days') * 1000);</code></pre>
+<p>Those rows are the event stream <code>QueueEvents</code> listens to. Keep as many days as you would want to look back on, and run the delete off-peak: on a big table it is a lot of dead rows for autovacuum.</p>
+
+<h2>Reading without slowing the workers</h2>
+<p>On Redis a dashboard competes for a single thread. On Postgres it competes for the same CPU, I/O and connections as your workers. What keeps it harmless:</p>
+<ul>
+<li><strong>A read-only role.</strong> Enough for every read above, and a mistake in a dashboard query cannot touch a job:
+<pre><code>CREATE ROLE dashboard_ro LOGIN PASSWORD '…';
+GRANT USAGE ON SCHEMA bullmq TO dashboard_ro;
+GRANT SELECT ON ALL TABLES IN SCHEMA bullmq TO dashboard_ro;</code></pre></li>
+<li><strong>A statement timeout and no parallel query</strong> on the dashboard's sessions. Without the second, one count over a large state can take several cores at once:
+<pre><code>SET statement_timeout = '10s';
+SET max_parallel_workers_per_gather = 0;</code></pre></li>
+<li><strong>Its own <code>application_name</code></strong>, so it is easy to find in <code>pg_stat_activity</code> and is never mistaken for a worker.</li>
+<li><strong>Slow refresh for big states.</strong> Waiting and active counts are small and worth reading often. Counting ten million completed jobs costs about a second of one core; once a minute is plenty.</li>
+<li><strong>Vacuum.</strong> Counts are index-only scans only while autovacuum keeps the visibility map current. Right after a bulk load they visit the table and get much slower. A queue table with heavy churn benefits from a lower <code>autovacuum_vacuum_scale_factor</code> on <code>job</code>.</li>
+<li><strong>Behind a transaction pooler</strong> (PgBouncer, Supavisor, RDS Proxy), session settings do not stick. Run each read in its own transaction with <code>SET LOCAL</code>.</li>
+</ul>
+
+<h2>Doing it with Bullpane</h2>
+<p>Bullpane 0.6 reads and operates BullMQ queues on Postgres with the same pages, actions and alerts as on Redis, following the rules above: a read-only role is enough to browse, reads run with a timeout and no parallel query, counts on big states are refreshed less often, it works behind PgBouncer and over TLS, and a health card shows connections, database and table sizes and warns when <code>event</code> passes 1 GiB. Measured on 1M jobs across 20 queues, the stats for every queue take 60 ms; with ten browser tabs open on a steady workload, worker throughput stayed within noise.</p>
+<pre><code>npx bullpane --postgres postgres://user:pass@localhost:5432/app
+# or
+docker run -d -p 3000:3000 -v bullpane-data:/data bullpane/bullpane</code></pre>
+<p><a class="btn primary" href="/#install">Install the free edition</a> <a class="btn" href="https://github.com/madmorett/bullpane/blob/main/docs/POSTGRES.md" rel="noopener">Read the Postgres notes</a></p>
+
+<h2>Sources</h2>
+<ul>
+<li>BullMQ 6.3.4 source: <code>postgres/migrations/0001_schema.sql</code> (tables, the <code>job_state</code> enum and the partial indexes), <code>postgres/postgres-queue-backend.js</code> (<code>trimEvents</code> not implemented, workers named through <code>application_name</code>).</li>
+<li>Every query and snippet here was run against BullMQ 6.3.4 on PostgreSQL 16, with real workers, including the read-only role.</li>
+<li><a href="https://github.com/madmorett/bullpane/blob/main/docs/POSTGRES.md" rel="noopener">Bullpane: BullMQ on Postgres</a>, with the load and lock measurements.</li>
+</ul>
+<p class="lead-sm" style="margin-top:24px">Something here wrong for your BullMQ version? Write to <a href="mailto:hello@bullpane.com">hello@bullpane.com</a> and it gets fixed.</p>
+</div></main>
+<footer><div class="wrap"><div>© <span id="y"></span> Bullpane · Built by <a href="https://www.linkedin.com/in/matheusmorett/" rel="noopener">Matheus Morett</a>.</div><div style="display:flex;gap:18px;flex-wrap:wrap"><a href="mailto:hello@bullpane.com">hello@bullpane.com</a><a href="/guides/">Guides</a><a href="/vs/bull-board">vs bull-board</a><a href="/vs/taskforce">vs Taskforce</a><a href="/vs/queuedash">vs QueueDash</a><a href="/changelog">Changelog</a><a href="/terms">Terms</a><a href="/privacy">Privacy</a></div></div></footer><script>document.getElementById("y").textContent=new Date().getFullYear();</script></body></html>

@@ -11,7 +11,267 @@ The public page at [bullpane.com/changelog](https://bullpane.com/changelog) is
 written from this file — when you add an entry here, mirror it there
 (`apps/website/public/changelog.html`).
 
-## [Unreleased]
+## [0.7.1] — 2026-10-07
+
+### Fixed
+
+- Flow maps: arrows now have arrowheads. They never rendered: the marker's id
+  came from a CSS-variable colour that `url(#…)` cannot reference, and the line
+  ended under the target queue's card. The arrowhead is now drawn on the edge
+  and its tip sits just outside the card.
+- Detected FlowProducer flows read the way they are written: the parent queue
+  sits on the left and its arrows fan out to the child queues it waits for
+  (they pointed child → parent before), on flow maps and on "All queues". On
+  the flow maps API a detected edge's `from` is now the parent; the
+  connection-level `GET /connections/:id/flows` keeps Redis' child → parent.
+
+## [0.7.0] — 2026-10-07
+
+### Added
+
+- **Flow maps (Pro).** Name a process and draw the queues it goes through:
+  "Checkout" is checkout → payment-capture → email-send | pick-pack, with live
+  counts on every queue. A map may cross connections (one Redis to another,
+  Redis to Postgres), maps nest like folders, and the positions the team drags
+  are saved for everyone. Queues linked by BullMQ's FlowProducer show up as
+  detected maps, read-only and rooted at the parent queue; copy one to edit it.
+  A queue that disappears or a connection that is down is drawn as missing,
+  never an error. API: `/flow-maps`; MCP: `list_flow_maps`, `get_flow_map`,
+  `create_flow_map`, `update_flow_map`, `delete_flow_map`, `add_flow_queue`,
+  `remove_flow_queue`, `add_flow_edge`, `remove_flow_edge`, `copy_flow_map`,
+  so an AI client can draw a process from your code ("call `add_flow_edge` for
+  each hop").
+
+### Upgrading
+
+- One migration runs at boot: three new tables (`flow_maps`, `flow_map_nodes`,
+  `flow_map_edges`), on SQLite and on MySQL. The existing per-connection flow
+  graph and its drawn arrows are unchanged and still listed under "All queues".
+
+## [0.6.3] — 2026-10-07
+
+### Added
+
+- **Promote every delayed job of a group, or of a search.** "Promote all
+  delayed" on a group, and "Promote all matches" on a search in the delayed
+  tab, promote every matching job, not only the 500 that fit a selection.
+  Each server call is bounded (2000 promotions, a capped number of scan
+  slices) and returns a cursor; the dialog loops, counts and can stop between
+  calls. On a BullMQ Pro queue the jobs go back into their group. API:
+  `POST …/jobs/promote-matching`; MCP: `promote_matching`.
+- **Group actions on the queue page.** With a group filter on, a toolbar
+  pauses, resumes, promotes all delayed of, or drains that group, and links to
+  its page. That includes groups Pro has not indexed because all their jobs
+  are delayed, which the groups page cannot list: pausing one works and its
+  jobs join it paused.
+
+### Fixed
+
+- **The waiting count of a BullMQ Pro queue counts the jobs waiting in groups.**
+  Pro keeps a group's waiting jobs in the group's own list, not in the queue's
+  wait list, so a queue with thousands of grouped jobs showed "waiting 0". The
+  waiting tab now adds them, with a tooltip that splits the two and a "+" when
+  the sum stopped at 1000 groups. With a group filter it shows that group's
+  total. An empty wait list on a Pro queue says where the jobs are. The sum
+  costs two O(1) commands per group in the existing stats script, on the queue
+  page only.
+- **The group filter offers groups whose jobs are all delayed.** Pro only
+  indexes groups with jobs waiting, running, limited or paused, so the picker
+  never listed them, and it showed "N waiting" on every tab. Outside the waiting
+  tab it now lists the groups of the jobs on screen first ("on this page") and
+  hides the waiting counts.
+
+## [0.6.2] — 2026-10-06
+
+### Added
+
+- **Pause, resume and drain a BullMQ Pro group** from the group page, and from MCP:
+  `pause_group` and `resume_group` are tools, and `request_destructive_action` with
+  `drain_group` returns a link to the confirmation dialog. Drain is admin, like
+  draining a queue. These are BullMQ Pro operations, so they need Pro's own package
+  installed next to Bullpane. Bullpane does not bundle it; set `BULLMQ_PRO_DIR` to
+  a folder where you installed it with your token. See `docs/BULLMQ-PRO.md`. (#10)
+
+### Fixed
+
+- **Job actions no longer take a job out of its BullMQ Pro group.** Core bullmq's
+  promote and retry put a grouped job in the queue-wide wait list, where a Pro
+  worker runs it with no group concurrency or rate limit, even while its group is
+  paused. Its remove left a waiting job's id in the group's list. With BullMQ Pro's
+  package installed, every write on a Pro queue now runs Pro's own scripts.
+  Without it, these writes are refused with `409 bullmq_pro_api_required`:
+  - promote or retry of a grouped job;
+  - remove of a waiting grouped job;
+  - add with `opts.group`;
+  - retry all, drain or obliterate on a Pro queue.
+
+  Everything else keeps working, including removing delayed, completed or failed
+  grouped jobs.
+
+### Upgrading
+
+- **On BullMQ Pro queues, install BullMQ Pro's package next to Bullpane before
+  upgrading**, or the writes listed above are refused from now on. Bullpane cannot
+  ship it: it is commercial and served from Taskforce's registry with your token.
+  `docs/BULLMQ-PRO.md` has the Docker build (token as a build secret), source and
+  `npx` recipes. The boot banner says `bullmq-pro: <version>` when it is found.
+  Redis queues without groups and Postgres queues are unaffected.
+
+## [0.6.1] — 2026-10-06
+
+### Fixed
+
+- **A BullMQ Pro group's delayed jobs can be found and acted on.** Pro keeps
+  only waiting jobs under their group; delayed (and failed, completed, active)
+  ones sit in the queue's own states, so the group filter showed nothing and a
+  group with only delayed jobs was not even listed. The group filter on the
+  queue page now works on every tab: on Delayed it scans the state for that
+  group's jobs, a bounded call at a time that never reads payloads of other
+  groups, and the results can be promoted or removed one by one or in bulk.
+  The group page links to its delayed, failed and completed jobs, and the MCP
+  `search_jobs` tool takes `group_id`. (#9)
+
+  Known issue, fixed in 0.6.2: promoting or retrying a grouped job still goes
+  through core bullmq, which puts it in the queue-wide wait list, outside its
+  group. Upgrade to 0.6.2 before promoting a group's jobs.
+
+## [0.6.0] — 2026-10-04
+
+### Added
+
+- **BullMQ on Postgres.** BullMQ 6 can keep its queues in PostgreSQL, and
+  Bullpane now reads and operates them: add a connection of kind *Postgres*
+  with the database URL and the schema BullMQ created (default `bullmq`), or
+  `npx bullpane --postgres postgres://user:pass@host:5432/db`, or
+  `"kind": "postgres"` in `BULLPANE_CONNECTIONS`. Queues, counts, job lists,
+  search, job detail, logs, schedulers, flow trees, metrics, alerts and every
+  action work as on Redis. Reads are SQL on BullMQ's own tables (one statement
+  each, on BullMQ's partial indexes, single-core, payloads truncated in SQL);
+  writes go through the official bullmq API. Requires a schema written by
+  BullMQ ≥ 6.0.3; Bullpane never runs migrations on your database.
+  See `docs/POSTGRES.md`.
+- **Works where Postgres actually runs**: behind PgBouncer and other
+  transaction poolers, over TLS with the URL your provider gives you
+  (`sslmode=require` means what it means in psql), and with a read-only role
+  (browsing works; actions answer `403 database_permission_denied`).
+- **Postgres health card**: connections against `max_connections`,
+  transactions/sec, database and table sizes, and a warning when BullMQ's
+  `event` table, which BullMQ 6 never trims, passes 1 GiB.
+- Counts on Postgres are exact. Big states (100k+ jobs) are recounted less
+  often, up to once a minute from 3M jobs, so a large install does not keep a
+  core of its database busy.
+
+### Changed
+
+- The health monitor is now "Server health": its wording no longer assumes Redis.
+
+### Tested
+
+- Every feature end to end on Postgres (`pnpm smoke:postgres`): real workers,
+  a real browser, PgBouncer, TLS, a read-only role, MySQL as the app
+  database, and a load test showing the dashboard's reads take no locks a
+  worker can wait on and leave worker throughput within noise with 10 tabs open.
+
+## [0.5.2] — 2026-10-04
+
+### Added
+
+- **Docker Hub.** The image is now also published as `bullpane/bullpane`
+  (same tags, same multi-platform build as `ghcr.io/madmorett/bullpane`), so the
+  install is `docker run -d -p 3000:3000 -v bullpane-data:/data bullpane/bullpane`.
+  0.5.1 was copied there as `0.5.1`, `0.5` and `latest`.
+- **`npx bullpane`.** The same dashboard as an npm package, for a look without
+  Docker: `npx bullpane --redis redis://localhost:6379`. Listens on 127.0.0.1,
+  keeps its SQLite in `~/.bullpane`.
+
+### Fixed
+
+- **A blank page after upgrading.** The UI's `index.html` was served with a
+  one-hour cache, so a browser that had loaded the previous version kept asking
+  for its bundles, which an upgrade removes. It is now always revalidated; the
+  hashed bundles keep their cache.
+- `npx bullpane` no longer prints a deprecation warning for `glob` on first run
+  (`@fastify/static` 8 → 10).
+
+## [0.5.1] — 2026-10-04
+
+### Added
+
+- **No database to set up.** Without `DATABASE_URL`, Bullpane now keeps its own
+  data (connections, settings, and on Pro users, alerts, folders, the audit log)
+  in a SQLite file at `BULLPANE_DATA_DIR/bullpane.db` — `/data` in the image.
+  `docker run -p 3000:3000 -v bullpane-data:/data ghcr.io/madmorett/bullpane`
+  is the whole install. Mount a volume on `/data`, or the data dies with the
+  container. `DATABASE_URL=file:/path/to/bullpane.db` picks another file.
+- **MySQL is unchanged and still supported.** An install that sets
+  `DATABASE_URL=mysql://…` keeps using MySQL, with the same schema and no
+  migration on upgrade. Use MySQL when you run more than one replica: SQLite is
+  one file on one disk, so two instances would each see their own users and
+  sessions. Do not put the SQLite file on NFS/EFS. There is no SQLite → MySQL
+  data migration yet.
+
+### Changed
+
+- The default when `DATABASE_URL` is unset used to be
+  `mysql://bullpane:bullpane@localhost:3306/bullpane`. It is now SQLite. Every
+  compose file and deploy script in this repository sets `DATABASE_URL`
+  explicitly; an install that relied on the old default must set it to keep
+  its MySQL data. The boot banner says which database is in use.
+- `docker-compose.yml` starts MySQL only when asked: `COMPOSE_PROFILES=mysql`
+  plus `DATABASE_URL=mysql://bullpane:bullpane@mysql:3306/bullpane` in `.env`.
+  Without them it runs the app alone on SQLite. The company/trial composes and
+  the EC2 installer still bundle MySQL. **If you ran this repository's
+  `docker-compose.yml` with its bundled MySQL**, add those two lines before
+  updating: the volume is the same `mysql-data`, so your data is where you left
+  it. Without them the app starts on an empty SQLite database.
+- A `DATABASE_URL` that is neither `mysql://` nor `file:` now stops the boot
+  with an error instead of being handed to the MySQL driver.
+
+### Fixed
+
+- **A database blip during an alerts tick no longer crashes the server (Pro).**
+  With a rule covering every queue — the default rule is one — a failed read of
+  the connection list left an unhandled promise rejection, which stops a Node 22
+  process. The tick now fails, logs, and the next one runs.
+
+## [0.5.0] — 2026-10-04
+
+### Added
+
+- **MCP server (Pro).** Paste `<PUBLIC_URL>/mcp` into Claude (claude.ai, Claude
+  Desktop, Claude Code) or any MCP client that supports OAuth, sign in with your
+  Bullpane login or SSO, and pick
+  **read** or **read & write** on the consent screen. A client acts as you: what
+  you cannot do in the dashboard it cannot do either, because every tool is the
+  same `/api` call the dashboard makes. Effective access is the lowest of the
+  admin's ceiling (`Settings → MCP`: off / read / read & write, default off), what
+  you approved and your role — a viewer never writes — and it is re-checked on
+  every call. Writes are in the audit log with `via: mcp`. Drain, clean and
+  obliterate are never run from MCP: the client gets a link that opens the
+  confirmation dialog. OAuth 2.1 with PKCE, dynamic client registration and
+  rotating refresh tokens; connected clients can be disconnected from Settings.
+  Cloud-hosted clients (claude.ai, Claude Desktop) need `PUBLIC_URL` to be public HTTPS.
+
+### Fixed
+
+- **Promoting a job scheduler's delayed job no longer skips the next run.**
+  bullmq computes a scheduler's next iteration from the scheduled time of the job
+  that just ran, so promoting a daily job ran tomorrow's iteration today and left
+  tomorrow empty. Promoting one now asks: **run a copy now** (the job stays in place,
+  a one-off copy with the same name, data and options runs, the next run still
+  happens) or **promote and skip the next run** (bullmq's own promote). The API
+  defaults to the copy (`{ "scheduler": "run_copy" | "skip_next" }`), and so does
+  bulk promote. Job rows now carry `repeatJobKey`.
+
+## [0.4.0] — 2026-10-04
+
+### Changed
+
+- **Licensing is now open core.** The code of the Pro features moved to
+  `apps/server/src/ee/` and `apps/web/src/ee/` and is licensed under the
+  Bullpane Commercial License: readable and modifiable, free for development and
+  testing, a Pro subscription for production. Everything else stays MIT.
+  Releases up to 0.3.0 remain MIT in full. No behaviour changed.
 
 ### Added
 

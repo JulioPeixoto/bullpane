@@ -23,7 +23,7 @@ export interface JobsTableProps {
   error?: unknown;
   emptyText?: string;
   canOperate: boolean;
-  onAction?: (jobId: string, action: JobActionKind) => void;
+  onAction?: (jobId: string, action: JobActionKind, job: JobSummary) => void;
   pendingId?: string | null;
   /** show the state column (useful when jobs mix states, e.g. search or groups) */
   showState?: boolean;
@@ -165,7 +165,7 @@ function JobRow({
   connectionId: string;
   queue: string;
   canOperate: boolean;
-  onAction?: (jobId: string, action: JobActionKind) => void;
+  onAction?: (jobId: string, action: JobActionKind, job: JobSummary) => void;
   pending: boolean;
   showState: boolean;
   showGroup: boolean;
@@ -291,17 +291,17 @@ function JobRow({
       <Td align="right" data-no-row-click>
         <div className="flex items-center justify-end gap-0.5">
           {canOperate && onAction && canRetry && (
-            <Button size="icon-xs" variant="ghost" title="Retry" aria-label="Retry job" onClick={() => onAction(job.id, "retry")}>
+            <Button size="icon-xs" variant="ghost" title="Retry" aria-label="Retry job" onClick={() => onAction(job.id, "retry", job)}>
               <RotateCcw />
             </Button>
           )}
           {canOperate && onAction && canPromote && (
-            <Button size="icon-xs" variant="ghost" title="Promote" aria-label="Promote job" onClick={() => onAction(job.id, "promote")}>
+            <Button size="icon-xs" variant="ghost" title="Promote" aria-label="Promote job" onClick={() => onAction(job.id, "promote", job)}>
               <ArrowUpToLine />
             </Button>
           )}
           {canOperate && onAction && (
-            <Button size="icon-xs" variant="ghost" title="Remove" aria-label="Remove job" className="hover:text-danger" onClick={() => onAction(job.id, "remove")}>
+            <Button size="icon-xs" variant="ghost" title="Remove" aria-label="Remove job" className="hover:text-danger" onClick={() => onAction(job.id, "remove", job)}>
               <Trash2 />
             </Button>
           )}

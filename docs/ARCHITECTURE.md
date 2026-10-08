@@ -7,17 +7,21 @@ Pro subscription (USD 39/month or 390/year, one installation) that unlocks team 
 ```
 bullpane/
 ├── apps/
-│   ├── server/          Fastify API + serves the built web UI. Owns MySQL, auth, alerts, licensing.
+│   ├── server/          Fastify API + serves the built web UI. Owns the database, auth, alerts, licensing.
+│   │   └── src/ee/      Pro features (alerts, audit, folders, flows, SSO, user admin). Commercial license.
 │   ├── web/             React + Vite dashboard.
+│   │   └── src/ee/      Pro pages. Commercial license.
 │   └── simulator/       Generates realistic BullMQ (and fake Pro group) traffic for the live demo.
 ├── packages/
 │   ├── shared/          Types + zod schemas shared by everything. THE contract.
-│   └── redis-inspector/ ioredis + Lua scripts. All reads of a customer's Redis go through here.
+│   ├── inspector/       The backend-neutral `Inspector` interface the server codes against.
+│   ├── redis-inspector/ ioredis + Lua scripts. All reads of a customer's Redis go through here.
+│   └── pg-inspector/    SQL over BullMQ 6's Postgres schema. All reads of a customer's Postgres go here.
 ├── scripts/gen-license.ts   Ed25519 keypair + offline license signing (vendor side).
 ├── apps/license-api/        Cloudflare Worker at api.bullpane.com: activates subscription
 │                            keys at the store (Creem) and signs 7-day leases.
 ├── Dockerfile               Multi-stage: build web + server, run one node process.
-├── docker-compose.yml       app + mysql (bring your own Redis).
+├── docker-compose.yml       app on SQLite; COMPOSE_PROFILES=mysql adds MySQL (bring your own Redis).
 └── docker-compose.demo.yml  app + mysql + redis + simulator, DEMO_MODE=true.
 ```
 
@@ -26,16 +30,62 @@ bullpane/
 ```
 Browser ──HTTP/JSON──> Fastify (apps/server)
                          │  auth (cookie session) · role check · pro-feature gate
-                         ├──> MySQL (users, sessions, connections, folders, alerts, flow edges, settings)
-                         └──> InspectorPool (packages/redis-inspector)
-                                └──> ioredis per connection ──EVALSHA──> customer Redis
+                         ├──> SQLite or MySQL (users, sessions, connections, folders, alerts, flow edges, settings)
+                         └──> InspectorPool (apps/server/src/services/inspectorPool.ts)
+                                ├──> RedisInspector: ioredis per connection ──EVALSHA──> customer Redis
+                                └──> PgInspector: pg pool per connection ──SQL──> customer Postgres (BullMQ 6)
 ```
 
-* The server never touches Redis directly. Everything goes through `Inspector`
-  (`packages/redis-inspector/src/types.ts`).
-* The inspector never touches MySQL. It is stateless apart from connection caches.
+* The server never touches Redis or Postgres directly. Everything goes through
+  `Inspector` (`packages/inspector/src/types.ts`); a connection's `kind` picks
+  the implementation, and nothing above the pool knows which one it got.
+* The inspector never touches the database. It is stateless apart from connection caches.
 * The web UI only talks to `/api/*`. It polls; there is no websocket in v1
   (polling with a Lua-backed counts endpoint is one EVALSHA per queue, cheap enough).
+
+## The dashboard's own database: SQLite or MySQL
+
+`DATABASE_URL` unset → SQLite at `BULLPANE_DATA_DIR/bullpane.db` (`/data` in the
+image). `mysql://…` → MySQL. The free edition's whole promise is "start the
+container and open it", and a MySQL to provision was the one step bull-board
+never asked for. MySQL stays for what SQLite cannot do: **more than one
+replica**. SQLite is one file on one disk, so two instances would each have
+their own users and sessions. NFS/EFS is not a disk for this purpose (WAL needs
+shared memory between processes on one host).
+
+How one codebase serves both, in `apps/server/src/db/`:
+
+* **Two schemas, one set of types.** `schema.mysql.ts` and `schema.sqlite.ts`
+  declare the same tables. The SQLite file asserts its row and insert types
+  equal the MySQL ones, so a column added on one side only fails the
+  typecheck. Dates are `DATETIME(3)` on MySQL and epoch-ms `INTEGER` on SQLite —
+  both come back as `Date` with the millisecond the audit cursor pages on.
+* **`schema.ts` picks one at boot.** Services import tables from it, and its
+  exports are `let` bindings reassigned once by `createDatabase()`. ES module
+  bindings are live, so ~70 query sites stay dialect-blind without threading a
+  schema through every constructor. The one rule this imposes: never capture a
+  table in a module-level constant.
+* **`Db` is typed as MySQL on both.** The builder surface the services use is
+  shared, with two exceptions that branch explicitly: the settings upsert
+  (`schemaDialect()`), and the RESULT of a write. mysql2 resolves to
+  `[ResultSetHeader]` with `affectedRows`, libsql to a ResultSet with
+  `rowsAffected` — so a conditional write that counts rows (MCP's single-use
+  codes and refresh rotation) goes through `affectedRows()` in
+  `ee/mcp/store.ts`, which reads both. Reading `res[0].affectedRows` directly
+  is always 0 on SQLite.
+* **Two migration histories.** `migrations/mysql/` is what existing installs
+  already ran (names are recorded without the directory). `migrations/sqlite/`
+  starts at the current schema. A schema change is one file in each, plus both
+  schema files.
+* **`database.integration.test.ts`** boots the real app on a real database,
+  unlocks Pro with a signed license and drives every table through HTTP. It runs
+  on SQLite always, and on MySQL with `BULLPANE_TEST_MYSQL_URL`. The other
+  suites stub `db`, which proves the calls are built but not that a database
+  accepts them.
+
+Known divergence: the MySQL tables use `utf8mb4_unicode_ci`, so queue names that
+differ only in case (`Reports` / `reports`) collide there — hiding one is a
+no-op once the other is hidden. SQLite compares bytes, as BullMQ does.
 
 ## Performance contract (why the inspector exists)
 
@@ -66,6 +116,34 @@ no dashboard. Rules, enforced in `redis-inspector`:
 6. **Cluster safe.** Each script touches keys of exactly one queue (same hash tag).
 7. **Connections fail fast.** `connectTimeout 5 s`, `maxRetriesPerRequest 1`,
    `enableOfflineQueue false`. A dead Redis produces a red badge, not a hung dashboard.
+
+## Postgres backend (BullMQ 6)
+
+BullMQ 6 can store queues in PostgreSQL. `packages/pg-inspector` implements the
+same `Inspector` against BullMQ's own schema (frozen for all of 6.x). The rules
+above, read for SQL:
+
+1. **One statement per read.** Multi-queue reads pass the queue names as an
+   array (`unnest($1::text[])`), never one query per queue.
+2. **Every job query pins `state`.** BullMQ's job indexes are partial and
+   state-scoped; a query without the state predicate reads the whole queue.
+   Counts are per-state scalar subqueries so each one is an index-only scan.
+3. **Truncate in SQL.** `left(data::text, previewBytes)`, and payloads above
+   `listFieldCapBytes` are never cast to text (`pg_column_size` reads the
+   stored size without detoasting).
+4. **Pages walk the index, then join.** The page's ids come off the state's
+   partial index (`OFFSET` over a narrow index), and only that page is joined to
+   `job`. True keyset pagination needs a cursor in `getJobs`; that is the next
+   step for very deep pages (offset 39k on 1M rows: 133 ms).
+5. **Discovery is complete from the first call**: `meta` ∪ a loose index scan
+   over `job`'s primary key (one probe per queue), so flow-only queues with no
+   meta row are listed too.
+6. **Writes use the official bullmq API** with `createPostgresBackend`.
+7. **The dashboard never migrates a customer's schema.** It checks it with
+   BullMQ's `assertSchemaCompatibility` and says `postgres_schema_missing` when
+   it is not there.
+
+Model differences and what they cost the customer's database: `docs/POSTGRES.md`.
 
 ## How alerts measure (and what they refuse to measure)
 
@@ -188,6 +266,17 @@ decisions that shape it are the **explicit 500-id ceiling** validated in zod
 and the click, and aborting on the first error would hide the 47 that worked.
 Concurrency is capped at 8, not `Promise.all` over 500.
 
+**Past the 500, there is promote-matching.** "Run this group now" or "run this campaign
+now" is thousands of delayed jobs nobody selects by hand. `Inspector.promoteMatching`
+reuses the search script over `delayed` (group filter and / or substring, payload
+previews cut to 0 bytes since only ids are needed), stops after `PROMOTE_MATCHING_LIMIT`
+matches or 50 slices, and promotes them through `promoteJob`, so grouped jobs go back
+into their group on a Pro queue. The cursor it returns is the scan position minus the
+jobs it promoted: they left the part already scanned, so the rest moved up. The UI
+loops over the cursor with a running count and a stop button. On the queue page a
+group filter brings a toolbar with the group actions (pause, resume, promote all
+delayed, drain), so a group Pro has not indexed (only delayed jobs) gets them too.
+
 On the web side the selection is keyed by **jobId, never by index**
 (`apps/web/src/lib/useJobSelection.ts`). The table repolls every 3 s and rows
 change position — that is already the cause of mis-clicks today, and a stored
@@ -265,10 +354,32 @@ docs/API.md, "Hidden queues".
 | Flow graph (detected from BullMQ flows + manual edges) | – | ✓ |
 | Audit log: who did what to which queue, persisted + CSV export | – | ✓ |
 | SSO: OIDC + SAML 2.0, configured by the customer's admin in the UI | – | ✓ |
+| MCP server: Claude or any MCP client reads and operates queues as the signed-in user | – | ✓ |
 
 Gating is one function on the server (`requireFeature(feature)`) returning HTTP 402
 `{ error: "pro_required", feature }`, and one hook on the web (`useEdition()`), so the UI
 shows the locked feature with a lock icon and an upsell instead of hiding it.
+
+### Where Pro code lives: `ee/`
+
+The code that implements a Pro feature lives in `apps/server/src/ee/` or
+`apps/web/src/ee/`, under the Bullpane Commercial License (`ee/LICENSE`). Everything
+else is MIT. The license, not the code layout, is what protects Pro: the source is
+public and anyone can delete a gate, but running a build without one in production
+breaks the license, and that is what a paying customer's compliance cares about.
+
+The boundary is by feature, not by layer:
+
+* **In `ee/`:** the alerts engine and its services, audit (service + the `onResponse`
+  hook), folders, flows, SSO (OIDC, SAML, provider admin, login flow), MCP (`ee/mcp/`), user admin
+  routes, the pages that render those features, and their tests.
+* **Outside `ee/`:** the gates themselves (`plugins/gates.ts`, `useEdition()`), license
+  verification, the edition service, sessions and password login, the DB schema and
+  migrations, the shared DTOs in `@bullpane/shared`, and the locked-state UI
+  (`LockedFeature`, upsell). Core may import from `ee/` to wire it up; `ee/` may import
+  anything from core.
+
+A new Pro feature goes in `ee/` from its first commit.
 
 ### The free edition has no login
 
@@ -360,7 +471,7 @@ verifies a signature with a public cert.
 
 **Two places the SSO login flow bends an existing rule, both on purpose.** The OIDC
 callback is a `GET` that authenticates somebody, so it is the single exception to
-"reads are never audited" (`AUDITED_READS` in `plugins/audit.ts`) — otherwise the trail
+"reads are never audited" (`AUDITED_READS` in `ee/plugins/audit.ts`) — otherwise the trail
 would record password logins but not SSO ones, and its contents would depend on which
 protocol the customer chose. And the SAML callback is a `POST`, so read-only mode
 allows that one path (`isLoginWrite`): read-only is about not touching the customer's
@@ -385,6 +496,70 @@ instance label (hostname + PUBLIC_URL) and the activation id. Details: docs/PRO.
 `DEMO_MODE=true` unlocks Pro with a "demo" badge and blocks destructive settings
 changes so the public playground can't be broken.
 
+## MCP: the same API, as the same person
+
+`/mcp` lets an AI client read and operate queues: Claude (claude.ai, Claude Desktop,
+Claude Code) or any MCP client that supports OAuth.
+Pro, because it only makes sense with accounts: the client acts as a person.
+
+**One rule for the MCP and the dashboard.** A tool never reaches into the inspector.
+It is an `/api` call — the one the dashboard makes — run in-process through
+`app.inject` as the user who connected the client (`ee/mcp/internal.ts`). So role
+guards, zod validation, Pro gates, `BULLPANE_READ_ONLY`, demo mode and the audit hook
+apply to the MCP without it knowing they exist, and a route added later is covered by
+construction. The identity crosses over in memory: the injected request carries a
+per-process nonce and the id of an entry that lives for that one call. The bearer
+token is accepted at `/mcp` and nowhere else; `/api` never sees it.
+
+**Effective access = the lowest of three**, re-evaluated on every call:
+
+| | viewer | operator | admin |
+|---|---|---|---|
+| admin ceiling `read` | read | read | read |
+| ceiling `write`, user approved `write` | **read** | write | write |
+| ceiling `write`, user approved `read` | read | read | read |
+| ceiling `off` | – | – | – |
+
+The ceiling is `Settings → MCP` (`mcp.max_access` in `settings`, default `off`); the
+user's choice is made on the consent screen and stored on the grant; the role is read
+fresh from `users`. Re-evaluating per call is what makes lowering the ceiling, demoting
+someone or disabling them take effect on the next call rather than when a token
+expires. The injected user's role is **capped** to match: `read` acts as a viewer,
+`write` as at most an operator. An admin's Claude therefore gets a 403 from drain and
+obliterate like anyone else's.
+
+**Destructive actions are a link, not a tool.** Drain, clean and obliterate destroy
+jobs in bulk and cannot be undone. `request_destructive_action` returns
+`/c/:id/q/:queue?confirm=<action>`, which opens that confirmation dialog in the
+dashboard, where a human reads the count and the queue name and clicks.
+
+**Audit.** Writes are recorded exactly like the dashboard's — same route, same row —
+with `detail.via = "mcp"` and the client's name, so "Ana retried it" and "Ana's Claude
+retried it" are distinguishable. Reads are not audited, by the same rule as the
+dashboard's. Connecting a client (`mcp.authorize`, refusals included), disconnecting
+one (`mcp.revoke`) and changing the ceiling (`mcp.settings_update`) are audited too.
+
+**OAuth 2.1, hand-rolled** for the same reason as OIDC (a handful of hashes and one
+HMAC, not a dependency tree): protected-resource and AS metadata at `/.well-known/*`,
+dynamic client registration (public clients; redirect URIs must be https, loopback
+http or an app scheme, never with a fragment), authorization code with **PKCE S256
+mandatory**, `resource` pinned to `<PUBLIC_URL>/mcp`, `iss` in the redirect (RFC 9207).
+Unknown clients and unregistered redirect URIs are shown to the user, never redirected
+to. The consent request travels through the browser signed (HMAC, 10 min). Codes are
+single-use (60 s) and burned on the first attempt, right or wrong. Access tokens are
+signed and short (1 h) and carry only the grant id; refresh tokens rotate, and
+presenting a rotated one again deletes the whole grant — it means the token leaked.
+Codes and refresh tokens are stored as SHA-256. Schema: `migrations/mysql/0009_mcp.sql`.
+A new password or disabling the user deletes their grants, like their sessions.
+
+**Stateless transport.** Streamable HTTP with JSON responses only: no SSE stream and
+no `Mcp-Session-Id`, so any replica answers any call and nothing lives in memory.
+
+**Reachability is the operator's catch.** Cloud-hosted clients (claude.ai, Claude
+Desktop) call `/mcp` from their provider's servers, so they need `PUBLIC_URL` to be
+public HTTPS; `Settings → MCP` warns when it looks private. Clients that run on the
+user's machine (Claude Code) work on a private network.
+
 ## Roles
 
 | Action | viewer | operator | admin |
@@ -405,6 +580,52 @@ per refresh, bounded and cached. Plain "worker of A calls B.add()" cannot be obs
 Redis without instrumenting the producer, so those edges are drawn manually and stored in
 MySQL. Both kinds render on the same graph, styled differently.
 
+## Flow maps (Pro)
+
+A flow map is a named diagram of the queues ONE process goes through
+("Checkout": checkout → payment-capture → email-send | pick-pack), drawn in the
+dashboard or by an MCP client (`create_flow_map`, then `add_flow_edge` per hop).
+Contract in API.md "Flow maps"; code in `ee/services/flowMaps.ts`.
+
+**Why maps reference queues instead of reusing folders.** A folder says whose a
+queue is (Payments, Notifications); a flow says where work goes, and one process
+crosses several folders. A queue belongs to one folder but appears in many flows,
+so a map *references* queues (`flow_map_nodes`) instead of owning them. Maps
+still nest like folders (`parent_id`), but each has its own diagram: a parent
+does not merge its children's. Deleting a map moves its children to its parent,
+the same promise folders make. See `migrations/mysql/0011_flow_maps.sql`.
+
+**A node is connection + queue** (`${connectionId}:${queueName}`; connection ids
+never contain `:`, queue names may, so ids split on the first one). One map may
+cross connections: `order-placed` on the shop Redis →
+`email-send` on the notifications Redis → `archive` on Postgres. The
+same queue name on two connections is two nodes, and edge idempotency is on the
+full refs. No foreign key to `connections` (queues are discovered strings, not
+rows): `ConnectionsService.remove()` deletes that connection's nodes and every
+edge touching them, leaving the other side of each map in place.
+
+**Detected maps** are computed, never stored. Per connection, the same sampled
+`child → parent` edges as Flow detection (one cache, 30 s, shared with the
+`/flows` page) are split into connected components, direction ignored; each
+component of 2+ queues is a map rooted at the queue no edge leaves (the
+FlowProducer parent at the top; ties: most incoming evidence, then name), with id
+`detected:<connectionId>:<root>`. They are read-only (`409
+detected_map_read_only`); `copy` turns one into a manual map with the same
+queues, on which the detected edges keep being drawn live rather than copied.
+A list waits at most 3 s for a connection's first sample; past that, or when a
+connection is down, the list answers without it and says
+`detectedComplete: false`, while the sample keeps filling the cache.
+
+**Cost of one map read.** Per connection on the map: the cached queue discovery,
+ONE `getQueueStats` pipeline for only the queues on the map that were discovered,
+and the cached detected edges (filtered to edges whose both ends are on the map).
+No scan per node, no per-node round trip. A queue that is not discovered, or a
+connection that is down or deleted, is a node with `missing: true` and empty
+counts: a map is a drawing first and never answers 5xx because part of it is
+gone. The detection sample itself costs what Flow detection costs, amortised over
+the 30 s cache. Map writes are not audited (like `/flow-edges` and folders): they
+change a drawing, not a queue, a job or an access.
+
 ## BullMQ Pro
 
 Pro queues share the standard key layout and add group keys under `${prefix}:${queue}:groups*`.
@@ -420,9 +641,48 @@ against `@taskforcesh/bullmq-pro` 7.48.0. The facts that shape the reader:
   maintained in that case. The UI says "worker default" when no override exists instead of
   guessing a number.
 - `groups:${gid}:meta` matches the discovery pattern `*:meta`; discovery drops those names.
+- Only **waiting** jobs live under their group (`groups:${gid}`, `groups:${gid}:p`). Delayed,
+  active, failed and completed jobs sit in the queue-wide state keys, marked by the group id on
+  the hash (`gid`) or in `opts.group.id`, and a group whose jobs are all delayed is in none of
+  the four status zsets until one becomes due. No key counts a group's delayed jobs, so the
+  groups page cannot show them; the queue page lists them by running the bounded search with
+  a group filter (`searchJobs.lua`, ARGV `group`). A job outside the group costs one HMGET of
+  its group fields and opts and its payload is never read, which is why a group scan inspects
+  `groupScanPerCall` (10 000) jobs per call, and the UI chains up to 10 calls before asking
+  for "Scan more".
+- Because waiting jobs live under their group, `wait` is empty on a Pro queue whose jobs
+  are all grouped, and the waiting count said 0 with thousands queued. The single-queue
+  route asks queueStats.lua to also sum each group's list and prioritized zset
+  (`QueueSummary.groupWaiting`): two O(1) commands per group, in the same EVALSHA, capped
+  at `GROUP_WAITING_CAP` (1000) groups and flagged `complete: false` past it. Lists of
+  queues (overview, sidebar) do not pay for it. With a group filter the waiting tab shows
+  that group's own total.
 
 Reads are read-only, one EVALSHA per page (`getGroups.lua`). The simulator writes the same
 layout so the demo shows groups without needing a Pro token.
+
+**Writes on a Pro queue need Pro's own API.** Core bullmq does not know groups: its
+promote and retry put a grouped job in the queue-wide `wait` list, where a Pro worker runs
+it outside its group (no group concurrency or rate limit, even while the group is paused),
+and its remove leaves a waiting job's id in the group's list. Pro ships its own scripts for
+these, and the group operations (`deleteGroup`, `pauseGroup`, `resumeGroup`) only exist
+there. Bullpane cannot bundle Pro (commercial, private registry), so
+`@taskforcesh/bullmq-pro` is an optional package the customer installs next to it
+(`BULLMQ_PRO_DIR`, docs/BULLMQ-PRO.md), loaded once at boot by `loadBullmqPro`:
+
+- **Installed:** `getQueue` hands Pro queues a `QueuePro`, so every existing action
+  (`job.promote()`, `retry()`, `remove()`, `queue.add()`, `obliterate`) runs Pro's scripts
+  without a code path of its own, and drain also calls `deleteGroups`. Non-Pro queues keep
+  core bullmq, because Pro's scripts follow the bullmq version Pro bundles.
+- **Not installed:** writes core bullmq would get wrong on a group throw
+  `bullmq_pro_api_required` (409) with what would have happened. That covers promote or retry
+  of a grouped job, remove of a waiting one, add with `opts.group`, and retry-all, drain or
+  obliterate on a Pro queue. Removing a delayed, completed or failed grouped job stays
+  allowed: those sit in the queue-wide keys.
+
+Deciding costs one HMGET of the job's group fields per job action and, per queue, one HGET of
+`meta.version` plus one EXISTS of the group status zsets, cached 30 s. Both touch keys of a
+single queue.
 
 ## Audit log (Pro)
 
@@ -436,7 +696,7 @@ nobody queries it. `audit_log` is the same information, persisted, filterable, e
 
 ### Instrumentation: one hook, enriched by handlers
 
-`plugins/audit.ts` registers a single `onResponse` hook for the whole `/api` tree, next to
+`ee/plugins/audit.ts` registers a single `onResponse` hook for the whole `/api` tree, next to
 `blockWrites` in `routes/index.ts` and for the same reason. The failure mode of a call per
 handler is silent: a route added in six months without its `audit.record(...)` line leaves
 a hole nobody notices until an auditor asks. A hook cannot be forgotten — an unmapped
@@ -455,7 +715,7 @@ every 5 s per connection, so auditing reads would bury the rows that matter.
    the connection name. There is no FK to `users` or `connections`. A trail whose only
    pointer to the person is a foreign key stops meaning anything the day that user is
    gone — and people leaving is the normal audit case, not the edge case. Users are
-   disabled rather than deleted for the same reason (`migrations/0007_user_disabled.sql`),
+   disabled rather than deleted for the same reason (`migrations/mysql/0007_user_disabled.sql`),
    but the log does not lean on that: `GET /audit/actors` reads distinct actors out of
    the log itself, so an actor stays filterable whatever happens to the users table.
 2. **`detail` never holds a job payload.** It carries the parameters of the action; the

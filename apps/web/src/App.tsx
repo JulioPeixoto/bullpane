@@ -17,21 +17,22 @@ import { HealthPage } from "@/pages/HealthPage";
 import { QueuePage } from "@/pages/queue/QueuePage";
 import { JobPage } from "@/pages/queue/JobPage";
 import { GroupJobsPage, GroupsPage } from "@/pages/queue/GroupsPage";
-import { FoldersPage } from "@/pages/FoldersPage";
-import { FolderPage } from "@/pages/folders/FolderPage";
-import { AlertsPage } from "@/pages/alerts/AlertsPage";
-import { UsersPage } from "@/pages/UsersPage";
-import { AuditPage } from "@/pages/AuditPage";
+import { FoldersPage } from "@/ee/pages/FoldersPage";
+import { FolderPage } from "@/ee/pages/folders/FolderPage";
+import { AlertsPage } from "@/ee/pages/alerts/AlertsPage";
+import { UsersPage } from "@/ee/pages/UsersPage";
+import { AuditPage } from "@/ee/pages/AuditPage";
 import { SettingsPage } from "@/pages/settings/SettingsPage";
 import { SchedulersIndexPage, SchedulersPage } from "@/pages/schedulers/SchedulersPage";
 import { NotFoundPage } from "@/pages/NotFoundPage";
 
 // The flow graph pulls in @xyflow/react (~250 KB). Free-edition users never
 // open it, so keep it out of the main chunk.
-const FlowsPage = lazy(() => import("@/pages/flows/FlowsPage").then((m) => ({ default: m.FlowsPage })));
-const FlowsIndexPage = lazy(() => import("@/pages/flows/FlowsPage").then((m) => ({ default: m.FlowsIndexPage })));
+const FlowsPage = lazy(() => import("@/ee/pages/flows/FlowsPage").then((m) => ({ default: m.FlowsPage })));
+const FlowsIndexPage = lazy(() => import("@/ee/pages/flows/FlowsPage").then((m) => ({ default: m.FlowsIndexPage })));
 // Same reason: the job-level flow tree renders with React Flow too. It is free
 // edition, but most sessions never open a flow, so it stays out of the main chunk.
+const McpConsentPage = lazy(() => import("@/ee/pages/McpConsentPage").then((m) => ({ default: m.McpConsentPage })));
 const JobTreePage = lazy(() => import("@/pages/queue/JobTreePage").then((m) => ({ default: m.JobTreePage })));
 
 function Lazy({ children }: { children: React.ReactNode }) {
@@ -77,6 +78,9 @@ export function App() {
                 </RedirectIfAuthed>
               }
             />
+            {/* MCP sign-in (Pro). Outside RequireAuth: an authorize error must render
+                for someone who is not signed in; the page sends them to /login itself. */}
+            <Route path="/oauth/consent" element={<Lazy><McpConsentPage /></Lazy>} />
             <Route element={<RequireAuth />}>
               <Route element={<AppShell />}>
                 <Route index element={<OverviewPage />} />

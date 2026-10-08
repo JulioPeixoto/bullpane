@@ -18,9 +18,10 @@ progress, logs, flows and Pro groups in a UI that is pleasant to look at.
 The free edition asks for nothing: no account, no login, no first-run wizard.
 Start the container, open it, use it.
 
-Works with BullMQ 4, 5 and 6 on Redis, Redis Cluster and Valkey, and with
-BullMQ Pro. The BullMQ 6 PostgreSQL backend is not supported yet; if you run
-it, [say so](mailto:hello@bullpane.com) and it moves up the list.
+Works with BullMQ 4, 5 and 6 on Redis, Redis Cluster and Valkey, with BullMQ
+Pro, and with BullMQ 6 on PostgreSQL (behind PgBouncer, over TLS, or with a
+read-only role): `npx bullpane --postgres postgres://user:pass@host:5432/db`.
+See [docs/POSTGRES.md](docs/POSTGRES.md).
 
 It exists because the alternatives make you choose. bull-board is a viewer:
 no search inside job data, no roles, no alerts. Taskforce.sh is hosted, so your
@@ -57,12 +58,29 @@ your Redis:
 Measured command by command in [deploy/ecs/REDIS-SAFETY.md](deploy/ecs/REDIS-SAFETY.md),
 and held to it by the harness in [docs/STRESS-TEST.md](docs/STRESS-TEST.md).
 
+### BullMQ on Postgres
+
+BullMQ 6 can keep queues in PostgreSQL. Add a connection of kind **Postgres**
+and Bullpane reads BullMQ's own schema with the same rules: one SQL statement
+per read, every job query on its partial index, payloads truncated in SQL, and
+writes through the official bullmq API. It never runs migrations on your
+database. Details, costs and the differences from Redis:
+[docs/POSTGRES.md](docs/POSTGRES.md).
+
 ## Quick start
 
 ```sh
-cp .env.example .env      # nothing to set for the free edition; SESSION_SECRET matters once Pro turns login on
-docker compose up -d      # app on :3000 + MySQL (bring your own Redis)
+docker run -d -p 3000:3000 -v bullpane-data:/data bullpane/bullpane
 ```
+
+No Docker? `npx bullpane --redis redis://localhost:6379` runs the same
+dashboard on your machine (Node 20+, listens on 127.0.0.1, data in `~/.bullpane`).
+
+No database to set up: the dashboard keeps its own data (connections,
+settings, and on Pro users, alerts and the audit log) in a SQLite file in
+`/data`. Keep the volume, or that data dies with the container. Prefer
+Compose? `docker compose up -d` does the same with this repository's
+`docker-compose.yml`.
 
 1. Open <http://localhost:3000>. The free edition drops you straight into the
    dashboard — there is nothing to sign up for.
@@ -71,9 +89,12 @@ docker compose up -d      # app on :3000 + MySQL (bring your own Redis)
    cached for 30 s.
 3. That is it. Add more connections for staging/prod, or other prefixes.
 
-Already have MySQL? Set `DATABASE_URL` and delete the `mysql` service from
-`docker-compose.yml`. The image is one Node process: put it behind your reverse
-proxy and set `PUBLIC_URL` so alert links point at the right host.
+MySQL is optional. Running more than one replica, or want a managed database?
+Set `DATABASE_URL=mysql://user:pass@host:3306/bullpane` (MySQL 8 or MariaDB) and
+Bullpane uses it instead. With Compose, `COMPOSE_PROFILES=mysql` in `.env` also
+starts a bundled MySQL (see the header of `docker-compose.yml`). The image is
+one Node process: put it behind your reverse proxy and set `PUBLIC_URL` so alert
+links point at the right host.
 
 Read [docs/PRODUCTION-TRIAL.md](docs/PRODUCTION-TRIAL.md) before pointing it at
 a busy production Redis, and [deploy/README.md](deploy/README.md) for EC2, ECS
@@ -113,11 +134,25 @@ simulator refills it. Details in [docs/DEMO.md](docs/DEMO.md).
 | Flow graph (detected from BullMQ flows + manual edges) | – | ✓ |
 | Audit log: who did what, when, from which IP — persisted, filterable, CSV | – | ✓ |
 | SSO (OIDC + SAML 2.0), configured by your own admin in the UI | – | ✓ |
+| MCP server: Claude or any MCP client reads and operates queues as the signed-in user | – | ✓ |
 
 USD 39/month or 390/year, one installation, unlimited users. Pro features are
 **visible in the free edition with a lock icon, never hidden**. Gating lives in
 exactly two places: `requireFeature()` on the server (HTTP 402) and
 `useEdition()` on the web.
+
+### MCP: your queues, inside your AI
+
+<img src="https://bullpane.com/media/mcp.gif" alt="Claude connected to Bullpane over MCP: signing in, finding failed jobs, retrying them as the user with an audit row, and being refused an obliterate that goes back to the dashboard" width="880">
+
+Bullpane is an MCP server. Add `<PUBLIC_URL>/mcp` to Claude (claude.ai, Claude
+Desktop, Claude Code) or any MCP client that supports OAuth, sign in with your
+Bullpane login or SSO, and pick read or read & write. The client acts as you,
+through the same API as the dashboard: access is the lowest of the admin's
+ceiling (Settings → MCP, off by default), what you approved and your role, so a
+viewer never writes. Every write is in the audit log with `via: mcp`; drain,
+clean and obliterate are never run from MCP, the client gets a link to confirm
+them in the dashboard. Design: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#mcp-the-same-api-as-the-same-person).
 
 ### The audit log, specifically
 
@@ -163,9 +198,8 @@ sends on activation, is in [docs/PRO.md](docs/PRO.md).
 
 ```sh
 pnpm install
-docker compose up mysql -d       # MySQL on localhost:3306 (bullpane/bullpane)
 cp .env.example .env
-pnpm dev                         # server :3000 (tsx watch) + web (Vite, proxied)
+pnpm dev                         # server :3000 (tsx watch) + web (Vite, proxied); SQLite in apps/server/data
 pnpm dev:simulator               # optional: fill local Redis with demo traffic
 ```
 
@@ -180,16 +214,18 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request.
 ## Project layout
 
 ```
-apps/server/               Fastify API + serves the built web UI. MySQL, auth, alerts, licensing.
+apps/server/               Fastify API + serves the built web UI. SQLite/MySQL, auth, alerts, licensing.
 apps/web/                  React + Vite + Tailwind dashboard.
 apps/simulator/            Demo traffic generator + the stress harness.
 apps/website/              bullpane.com (static, Cloudflare Worker).
 apps/license-api/          api.bullpane.com — activates keys, signs leases (Cloudflare Worker).
 packages/shared/           Types + zod schemas. The contract between everything.
+packages/inspector/        The backend-neutral Inspector contract the server codes against.
 packages/redis-inspector/  ioredis + Lua. Every read of a customer's Redis goes here.
+packages/pg-inspector/     SQL over BullMQ 6's Postgres schema. Every read of a customer's Postgres goes here.
 scripts/gen-license.ts     Ed25519 keypair + license signing (vendor side).
 Dockerfile                 Multi-stage; targets `runner` (dashboard) and `simulator`.
-docker-compose.yml         app + mysql (bring your own Redis).
+docker-compose.yml         app on SQLite; COMPOSE_PROFILES=mysql adds MySQL (bring your own Redis).
 docker-compose.demo.yml    app + mysql + redis + simulator, DEMO_MODE=true.
 ```
 
@@ -218,11 +254,13 @@ same production that Bullpane watches:
 
 ## License
 
-MIT for the whole codebase — see [LICENSE](LICENSE). The Pro features are in
-this repository under the same license; what you pay for is the key that unlocks
-them in the shipped build, and the maintenance of the project. That gating is
-the business model, and it is the honest reason this exists as open source at
-all.
+Open core — see [LICENSE](LICENSE). Everything outside an `ee/` directory is
+MIT: the free edition, the Redis inspector, the shared contract. The code of the
+Pro features lives in `apps/server/src/ee/` and `apps/web/src/ee/` under the
+[Bullpane Commercial License](apps/server/src/ee/LICENSE): you can read it,
+modify it and run it for development and testing, but running it in production
+needs a Pro subscription, and builds with the license check removed are not
+allowed. Releases up to 0.3.0 were MIT in full and stay that way.
 
 Security issues: please see [SECURITY.md](SECURITY.md) rather than opening a
 public issue.

@@ -156,6 +156,7 @@ export function hashToSummary(
     dataBytes,
     parent: parseParent(prefix, hash),
     groupId: parseGroupId(hash, opts),
+    repeatJobKey: hash.rjk || null,
     // `stc` is BullMQ's stall counter (Job.fromJSON: parseInt(json.stc || '0')).
     // > 0 means a worker lost the lock on this job at some point and the
     // StalledCheck recovered it. Not a state: a history kept on the job itself.

@@ -4,7 +4,11 @@
  */
 import { eq } from "drizzle-orm";
 import type { Db } from "../db";
-import { settings } from "../db/schema";
+import { schemaDialect, settings } from "../db/schema";
+
+type SqliteUpsert = {
+  onConflictDoUpdate(cfg: { target: typeof settings.key; set: { value: string } }): Promise<unknown>;
+};
 
 export interface SettingsStore {
   get(key: string): Promise<string | null>;
@@ -21,7 +25,17 @@ export class DrizzleSettingsStore implements SettingsStore {
     return value === undefined || value === "" ? null : value;
   }
 
+  /**
+   * The only dialect-specific write in the server: an upsert is
+   * `ON DUPLICATE KEY UPDATE` on MySQL and `ON CONFLICT DO UPDATE` on SQLite.
+   * `Db` is typed as MySQL for both, hence the explicit check.
+   */
   async set(key: string, value: string): Promise<void> {
+    if (schemaDialect() === "sqlite") {
+      const insert = this.db.insert(settings).values({ key, value }) as unknown as SqliteUpsert;
+      await insert.onConflictDoUpdate({ target: settings.key, set: { value } });
+      return;
+    }
     await this.db.insert(settings).values({ key, value }).onDuplicateKeyUpdate({ set: { value } });
   }
 

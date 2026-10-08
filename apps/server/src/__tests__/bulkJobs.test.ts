@@ -85,6 +85,30 @@ function fakeInspector() {
     ping: vi.fn(async () => ({ ok: true, latencyMs: 1, redisVersion: "7.2.0", error: null })),
     discoverQueues: vi.fn(async () => ["payments"]),
     getQueueStats: vi.fn(async () => ({})),
+    // "sched-*" ids stand for a job scheduler's delayed job
+    promoteJob: vi.fn(async (_queue: string, jobId: string, scheduler = "run_copy") => {
+      if (!jobId.startsWith("sched-")) return { mode: "promoted" };
+      return scheduler === "skip_next"
+        ? { mode: "skipped_next", schedulerId: "nightly" }
+        : { mode: "ran_copy", jobId: "copy-1", schedulerId: "nightly" };
+    }),
+    bullmqProApi: true,
+    promoteMatching: vi.fn(async () => ({
+      matched: 3,
+      promoted: 2,
+      failed: [{ jobId: "9", reason: "job_not_found" }],
+      failedCount: 1,
+      scanned: 1000,
+      total: 5000,
+      nextCursor: "998",
+    })),
+    getGroups: vi.fn(async () => ({ groups: [], total: 0, byStatus: { waiting: 0, limited: 0, maxed: 0, paused: 0 } })),
+    pauseGroup: vi.fn(async () => undefined),
+    resumeGroup: vi.fn(async () => undefined),
+    // "nopro-*" groups stand for an install without BullMQ Pro's package
+    drainGroup: vi.fn(async (_queue: string, groupId: string) => {
+      if (groupId.startsWith("nopro-")) throw new Error("bullmq_pro_api_required: draining a group needs BullMQ Pro's API");
+    }),
     bulkJobAction: vi.fn(async (_queue: string, action: string, jobIds: string[]) => {
       const ok = jobIds.filter((id) => !id.startsWith("ghost"));
       const failed = jobIds.filter((id) => id.startsWith("ghost")).map((jobId) => ({ jobId, reason: "job_not_found" }));
@@ -183,6 +207,39 @@ describe("bulk job actions", () => {
     await w.app.close();
   });
 
+  // Not bulk, but the same harness: the single promote carries the scheduler choice.
+  describe("single promote of a job scheduler's job", () => {
+    const one = (jobId: string) => `/api/connections/c1/queues/payments/jobs/${jobId}/promote`;
+
+    it("runs a copy when no choice is sent, and says so", async () => {
+      const w = await build();
+      const res = await w.app.inject({ method: "POST", url: one("sched-1") });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual({ ok: true, mode: "ran_copy", jobId: "copy-1", schedulerId: "nightly" });
+      expect(w.inspector.promoteJob).toHaveBeenCalledWith("payments", "sched-1", "run_copy");
+      await w.app.close();
+      expect(w.db.__audit[0]!.detail).toMatchObject({ ranCopy: "copy-1", schedulerId: "nightly" });
+    });
+
+    it("passes skip_next through and audits it", async () => {
+      const w = await build();
+      const res = await w.app.inject({ method: "POST", url: one("sched-1"), payload: { scheduler: "skip_next" } });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual({ ok: true, mode: "skipped_next", schedulerId: "nightly" });
+      expect(w.inspector.promoteJob).toHaveBeenCalledWith("payments", "sched-1", "skip_next");
+      await w.app.close();
+      expect(w.db.__audit[0]!.detail).toMatchObject({ skippedNext: true, schedulerId: "nightly" });
+    });
+
+    it("refuses an unknown choice with 400, before touching Redis", async () => {
+      const w = await build();
+      const res = await w.app.inject({ method: "POST", url: one("sched-1"), payload: { scheduler: "both" } });
+      expect(res.statusCode).toBe(400);
+      expect(w.inspector.promoteJob).not.toHaveBeenCalled();
+      await w.app.close();
+    });
+  });
+
   describe("audit", () => {
     it("records counts in detail, never a job payload", async () => {
       const w = await build();
@@ -229,5 +286,100 @@ describe("bulk job actions", () => {
       expect(row.result).toBe("error");
       expect(row.errorMessage).toContain("forbidden");
     });
+  });
+});
+
+// Not bulk either, same harness: BullMQ Pro's group operations.
+describe("BullMQ Pro group actions", () => {
+  it("adds the jobs waiting in groups to the queue summary, saying when the sum stopped at the cap", async () => {
+    const w = await build("viewer");
+    const stats = (groups: number) => ({
+      payments: {
+        counts: { waiting: 0, active: 0, completed: 0, failed: 0, delayed: 0, prioritized: 0, paused: 0, "waiting-children": 0 },
+        isPaused: false,
+        isPro: true,
+        groupsCount: 40,
+        groupWaiting: { jobs: 36_391, groups },
+        rates: { windowMinutes: 60, completed: 0, failed: 0, successPct: null, source: "zset", retentionSkewed: false },
+        library: null,
+        schedulersCount: 0,
+        stalledCount: 0,
+      },
+    });
+    w.inspector.getQueueStats.mockResolvedValueOnce(stats(40) as never).mockResolvedValueOnce(stats(10) as never);
+    const full = await w.app.inject({ method: "GET", url: "/api/connections/c1/queues/payments" });
+    expect(full.json().groupWaiting).toEqual({ jobs: 36_391, complete: true });
+    expect(w.inspector.getQueueStats).toHaveBeenCalledWith(["payments"], expect.objectContaining({ groupWaitingCap: expect.any(Number) }));
+    const partial = await w.app.inject({ method: "GET", url: "/api/connections/c1/queues/payments" });
+    expect(partial.json().groupWaiting).toEqual({ jobs: 36_391, complete: false });
+    await w.app.close();
+  });
+
+  const group = (gid: string, action: string) => `/api/connections/c1/queues/payments/groups/${gid}/${action}`;
+
+  it("says on the groups list whether BullMQ Pro's API is installed", async () => {
+    const w = await build("viewer");
+    const res = await w.app.inject({ method: "GET", url: "/api/connections/c1/queues/payments/groups" });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().bullmqProApi).toBe(true);
+    await w.app.close();
+  });
+
+  it("pauses and resumes as an operator, audited with the group id", async () => {
+    const w = await build("operator");
+    expect((await w.app.inject({ method: "POST", url: group("tenant-a", "pause") })).statusCode).toBe(200);
+    expect((await w.app.inject({ method: "POST", url: group("tenant-a", "resume") })).statusCode).toBe(200);
+    await w.app.close();
+    expect(w.inspector.pauseGroup).toHaveBeenCalledWith("payments", "tenant-a");
+    expect(w.inspector.resumeGroup).toHaveBeenCalledWith("payments", "tenant-a");
+    expect(w.db.__audit.map((r) => r.action)).toEqual(["group.pause", "group.resume"]);
+    expect(w.db.__audit[0]!.detail).toMatchObject({ groupId: "tenant-a" });
+  });
+
+  it("drains only as an admin, like draining a queue", async () => {
+    const op = await build("operator");
+    expect((await op.app.inject({ method: "POST", url: group("tenant-a", "drain") })).statusCode).toBe(403);
+    expect(op.inspector.drainGroup).not.toHaveBeenCalled();
+    await op.app.close();
+
+    const admin = await build("admin");
+    expect((await admin.app.inject({ method: "POST", url: group("tenant-a", "drain") })).statusCode).toBe(200);
+    await admin.app.close();
+    expect(admin.db.__audit[0]!.action).toBe("group.drain");
+  });
+
+  it("answers 409 with the reason when BullMQ Pro's API is missing", async () => {
+    const w = await build("admin");
+    const res = await w.app.inject({ method: "POST", url: group("nopro-a", "drain") });
+    expect(res.statusCode).toBe(409);
+    expect(res.json().message).toMatch(/bullmq_pro_api_required/);
+    await w.app.close();
+  });
+});
+
+// Same harness: promote every delayed job of a group / matching a search.
+describe("promote matching", () => {
+  const url = "/api/connections/c1/queues/payments/jobs/promote-matching";
+
+  it("passes the group, query and cursor through and audits counts with the group", async () => {
+    const w = await build("operator");
+    const res = await w.app.inject({ method: "POST", url, payload: { groupId: "tenant-a", query: "spring", cursor: "1000" } });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ promoted: 2, failedCount: 1, nextCursor: "998" });
+    expect(w.inspector.promoteMatching).toHaveBeenCalledWith("payments", { query: "spring", groupId: "tenant-a" }, { cursor: "1000", limit: expect.any(Number) });
+    await w.app.close();
+    const row = w.db.__audit[0]!;
+    expect(row.action).toBe("job.promote_matching");
+    expect(row.detail).toMatchObject({ groupId: "tenant-a", query: "spring", matched: 3, promoted: 2, failed: 1 });
+  });
+
+  it("refuses a call with neither a query nor a group, and a viewer", async () => {
+    const w = await build("operator");
+    expect((await w.app.inject({ method: "POST", url, payload: { query: "  " } })).statusCode).toBe(400);
+    await w.app.close();
+    const v = await build("viewer");
+    expect((await v.app.inject({ method: "POST", url, payload: { groupId: "tenant-a" } })).statusCode).toBe(403);
+    expect(v.inspector.promoteMatching).not.toHaveBeenCalled();
+    await v.app.close();
   });
 });

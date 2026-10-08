@@ -14,7 +14,7 @@ import { z } from "zod";
 
 export type Tier = "free" | "pro";
 
-export const PRO_FEATURES = ["alerts", "users", "folders", "flows", "audit", "sso"] as const;
+export const PRO_FEATURES = ["alerts", "users", "folders", "flows", "audit", "sso", "mcp"] as const;
 export type ProFeature = (typeof PRO_FEATURES)[number];
 
 /**
@@ -448,16 +448,37 @@ export interface SsoTestResult {
 }
 
 // ---------------------------------------------------------------------------
-// Redis connections
+// Connections (Redis, or Postgres since BullMQ 6)
 // ---------------------------------------------------------------------------
 
+/**
+ * Where a connection's queues live. BullMQ 6 added a PostgreSQL backend next to
+ * Redis; the same dashboard reads both through the same Inspector contract.
+ */
+export const CONNECTION_KINDS = ["redis", "postgres"] as const;
+export type ConnectionKind = (typeof CONNECTION_KINDS)[number];
+
+/**
+ * The namespace of a connection's queues. Redis: the key `prefix` BullMQ puts in
+ * front of every key ("bull"). Postgres: the schema BullMQ creates its tables in
+ * ("bullmq", BullMQ's DEFAULT_SCHEMA). Both are stored in the `prefix` field.
+ */
+export const DEFAULT_NAMESPACE: Record<ConnectionKind, string> = {
+  redis: "bull",
+  postgres: "bullmq",
+};
+
+/** A configured connection, Redis or Postgres (the type name predates Postgres). */
 export interface RedisConnection {
   id: string;
   name: string;
-  /** redis:// or rediss:// URL. Password is redacted in API responses. */
+  /** "redis" unless the connection was created for BullMQ's Postgres backend */
+  kind: ConnectionKind;
+  /** redis://, rediss:// or postgres:// URL. Password is redacted in API responses. */
   url: string;
-  /** BullMQ key prefix (default "bull") */
+  /** BullMQ key prefix (default "bull"), or the Postgres schema (default "bullmq") */
   prefix: string;
+  /** Redis Cluster. Always false for Postgres. */
   cluster: boolean;
   /** Optional hard filter for queue discovery, glob-ish, e.g. "payments-*" */
   queueFilter: string | null;
@@ -470,24 +491,71 @@ export interface RedisConnection {
 export interface ConnectionStatus {
   ok: boolean;
   latencyMs: number | null;
+  /** the server version, Redis or Postgres (the field name predates Postgres) */
   redisVersion: string | null;
   error: string | null;
   checkedAt: string;
 }
 
-export const createConnectionSchema = z.object({
+const URL_SCHEMES: Record<ConnectionKind, { test: RegExp; message: string }> = {
+  redis: { test: /^rediss?:\/\//, message: "Must start with redis:// or rediss://" },
+  postgres: { test: /^postgres(ql)?:\/\//, message: "Must start with postgres:// or postgresql://" },
+};
+
+/**
+ * A Postgres schema name BullMQ accepts unquoted-safe: it is interpolated into
+ * `search_path`, so anything else is refused here rather than at connect time.
+ */
+const PG_SCHEMA_RE = /^[A-Za-z_][A-Za-z0-9_]{0,62}$/;
+
+/**
+ * Cross-field rules of a connection: the URL scheme must match the kind, and a
+ * Postgres connection has a schema-shaped namespace and no cluster mode. Checks
+ * only what is present, so the same function serves create and update (the
+ * service re-checks an update against the stored kind).
+ */
+export function connectionIssues(v: {
+  kind?: ConnectionKind;
+  url?: string;
+  prefix?: string;
+  cluster?: boolean;
+}): { path: string; message: string }[] {
+  const issues: { path: string; message: string }[] = [];
+  const kind = v.kind ?? "redis";
+  if (v.url !== undefined && !URL_SCHEMES[kind].test.test(v.url)) {
+    issues.push({ path: "url", message: URL_SCHEMES[kind].message });
+  }
+  if (kind === "postgres") {
+    if (v.prefix !== undefined && !PG_SCHEMA_RE.test(v.prefix)) {
+      issues.push({ path: "prefix", message: "A Postgres schema: letters, digits and _, not starting with a digit" });
+    }
+    if (v.cluster === true) issues.push({ path: "cluster", message: "Cluster mode is Redis only" });
+  }
+  return issues;
+}
+
+const connectionFields = z.object({
   name: z.string().min(1).max(80),
-  url: z
-    .string()
-    .min(1)
-    .refine((u) => /^rediss?:\/\//.test(u), "Must start with redis:// or rediss://"),
-  prefix: z.string().min(1).max(64).default("bull"),
+  kind: z.enum(CONNECTION_KINDS).default("redis"),
+  url: z.string().min(1),
+  /** omitted → DEFAULT_NAMESPACE of the kind */
+  prefix: z.string().min(1).max(64).optional(),
   cluster: z.boolean().default(false),
   queueFilter: z.string().max(200).nullable().optional(),
 });
+
+export const createConnectionSchema = connectionFields
+  .superRefine((v, ctx) => {
+    for (const issue of connectionIssues(v)) ctx.addIssue({ code: z.ZodIssueCode.custom, path: [issue.path], message: issue.message });
+  })
+  .transform((v) => ({ ...v, prefix: v.prefix ?? DEFAULT_NAMESPACE[v.kind] }));
 export type CreateConnectionInput = z.infer<typeof createConnectionSchema>;
 
-export const updateConnectionSchema = createConnectionSchema.partial();
+/**
+ * `kind` cannot change on an update: moving a connection from Redis to Postgres
+ * is a different connection (different queues, different alerts history).
+ */
+export const updateConnectionSchema = connectionFields.omit({ kind: true }).partial();
 export type UpdateConnectionInput = z.infer<typeof updateConnectionSchema>;
 
 /**
@@ -501,13 +569,20 @@ export const reorderSchema = z.object({
 });
 export type ReorderInput = z.infer<typeof reorderSchema>;
 
-export const testConnectionSchema = z.object({
-  url: z.string().min(1),
-  prefix: z.string().optional(),
-  cluster: z.boolean().optional(),
-});
+export const testConnectionSchema = z
+  .object({
+    kind: z.enum(CONNECTION_KINDS).default("redis"),
+    url: z.string().min(1),
+    prefix: z.string().optional(),
+    cluster: z.boolean().optional(),
+  })
+  .superRefine((v, ctx) => {
+    for (const issue of connectionIssues(v)) ctx.addIssue({ code: z.ZodIssueCode.custom, path: [issue.path], message: issue.message });
+  });
 
 export interface RedisServerInfo {
+  /** absent on Redis (the field predates Postgres); see ServerInfo */
+  backend?: "redis";
   redisVersion: string;
   mode: string;
   uptimeSeconds: number;
@@ -552,6 +627,44 @@ export interface RedisServerInfo {
 }
 
 /**
+ * The server-side picture of a BullMQ Postgres backend: one round trip over
+ * pg_stat_* and the sizes of BullMQ's own tables.
+ */
+export interface PostgresServerInfo {
+  backend: "postgres";
+  /** server_version, e.g. "16.4" */
+  serverVersion: string;
+  /** the schema BullMQ lives in */
+  schema: string;
+  uptimeSeconds: number;
+  /** sessions on this database (pg_stat_activity) */
+  connectedClients: number;
+  maxConnections: number;
+  /** pg_database_size of the current database */
+  databaseSizeBytes: number;
+  /** pg_total_relation_size of `job` (rows + indexes + TOAST) */
+  jobTableBytes: number;
+  /**
+   * pg_total_relation_size of `event`. BullMQ's Postgres backend has no event
+   * retention (`trimEvents()` is not implemented in 6.x), so this only grows.
+   */
+  eventTableBytes: number;
+  /** xact_commit + xact_rollback, cumulative (the server turns it into a rate) */
+  totalTransactions: number | null;
+  /** blks_hit / (blks_hit + blks_read) as a percentage */
+  cacheHitRatePct: number | null;
+  /** deadlocks, cumulative */
+  deadlocks: number | null;
+  /** latency of the round trip we just did, ms */
+  latencyMs: number;
+  /** when this snapshot was taken (ISO) */
+  sampledAt: string;
+}
+
+/** What `serverInfo()` returns: narrow with `info.backend === "postgres"`. */
+export type ServerInfo = RedisServerInfo | PostgresServerInfo;
+
+/**
  * A point-in-time health sample of one connection, for the homepage monitor.
  * Rates are computed by the SERVER between polls, because INFO only gives
  * cumulative counters; the UI would otherwise have to diff them itself.
@@ -559,10 +672,15 @@ export interface RedisServerInfo {
 export interface ConnectionHealth {
   connectionId: string;
   connectionName: string;
+  /** which backend, known even while it is unreachable and `info` is null */
+  kind: ConnectionKind;
   ok: boolean;
   error: string | null;
-  info: RedisServerInfo | null;
-  /** commands/sec derived from total_commands_processed between the last two samples */
+  info: ServerInfo | null;
+  /**
+   * commands/sec derived from total_commands_processed between the last two
+   * samples; on Postgres, transactions/sec from xact_commit + xact_rollback
+   */
   commandsPerSec: number | null;
   /** CPU cores used, derived from used_cpu_sys+user between samples (1.0 = one full core) */
   cpuCores: number | null;
@@ -593,7 +711,9 @@ export interface HealthWarning {
     | "persistence_failed"
     | "rejected_connections"
     | "latency_high"
-    | "unreachable";
+    | "unreachable"
+    | "connections_high"
+    | "event_table_large";
   message: string;
 }
 
@@ -655,6 +775,12 @@ export interface QueueRates {
   retentionSkewed: boolean;
 }
 
+/**
+ * Groups whose waiting jobs the single-queue route sums (two O(1) commands each,
+ * in the same script as the counts). Past it the sum is partial and says so.
+ */
+export const GROUP_WAITING_CAP = 1000;
+
 export interface QueueSummary {
   name: string;
   prefix: string;
@@ -663,6 +789,13 @@ export interface QueueSummary {
   /** true when BullMQ Pro group keys exist for this queue or meta.version says bullmq-pro */
   isPro: boolean;
   groupsCount: number;
+  /**
+   * BullMQ Pro: jobs waiting in groups. Pro keeps them in each group's own list,
+   * not in `wait`, so `counts.waiting` does not include them. `complete` is false
+   * when the sum stopped at the per-call group cap (GROUP_WAITING_CAP). Only on the
+   * single-queue route, and only for a queue with groups.
+   */
+  groupWaiting?: { jobs: number; complete: boolean };
   /** job schedulers (repeatable jobs) configured on this queue — ZCARD of `repeat` */
   schedulersCount: number;
   /**
@@ -762,6 +895,12 @@ export interface JobSummary {
   /** BullMQ Pro group id if any */
   groupId: string | null;
   /**
+   * Hash field `rjk`: the job scheduler (or legacy repeatable job) that
+   * produced this job, null for a one-off job. Promoting such a job is not neutral
+   * (see SchedulerPromoteMode), so the UI asks first.
+   */
+  repeatJobKey: string | null;
+  /**
    * Hash field `stc` (read by `Job.fromJSON` as `stalledCounter`): how many
    * times this job was recovered for having stalled — the worker lost the lock
    * and the StalledCheck put the job back into `wait`.
@@ -856,6 +995,15 @@ export interface GroupsPage {
   groups: GroupSummary[];
   total: number;
   byStatus: GroupsByStatus;
+}
+
+/**
+ * GET /groups. `bullmqProApi` says whether BullMQ Pro's own package is installed
+ * next to Bullpane: the group actions (pause, resume, drain) and group-aware
+ * promote / retry / remove need it (docs/BULLMQ-PRO.md).
+ */
+export interface GroupsResponse extends GroupsPage {
+  bullmqProApi: boolean;
 }
 
 /**
@@ -989,6 +1137,30 @@ export type PauseQueueInput = z.infer<typeof pauseQueueSchema>;
 /** Cap of ids per bulk call. See the comment above. */
 export const BULK_JOB_LIMIT = 500;
 
+/**
+ * How to promote a delayed job produced by a job scheduler. That job IS the scheduler's
+ * next iteration, and bullmq computes the iteration after it from this job's own
+ * scheduled time — not from now. So the operator picks:
+ *  - `run_copy`: leave the job in place and run a one-off copy now. The next scheduled
+ *    run still happens. The default, because it never loses a run.
+ *  - `skip_next`: bullmq's own promote. The next iteration runs now instead of at its
+ *    time, and nothing runs at that time; the scheduler continues with the one after.
+ * Ignored for a job no scheduler produced.
+ */
+export const SCHEDULER_PROMOTE_MODES = ["run_copy", "skip_next"] as const;
+export type SchedulerPromoteMode = (typeof SCHEDULER_PROMOTE_MODES)[number];
+
+export const promoteJobSchema = z.object({
+  scheduler: z.enum(SCHEDULER_PROMOTE_MODES).default("run_copy"),
+});
+export type PromoteJobInput = z.input<typeof promoteJobSchema>;
+
+/** What promoting a delayed job did (see SchedulerPromoteMode). */
+export type PromoteJobResult =
+  | { mode: "promoted" }
+  | { mode: "ran_copy"; jobId: string; schedulerId: string }
+  | { mode: "skipped_next"; schedulerId: string };
+
 export const BULK_JOB_ACTIONS = ["retry", "remove", "promote"] as const;
 export type BulkJobAction = (typeof BULK_JOB_ACTIONS)[number];
 
@@ -1016,6 +1188,41 @@ export interface BulkJobActionResult {
   requested: number;
 }
 
+/**
+ * Delayed jobs one promote-matching call promotes at most. A group or a search can
+ * match tens of thousands of jobs: each call scans in bounded slices, promotes up
+ * to this many (bounded concurrency, like bulk actions) and hands back a cursor.
+ */
+export const PROMOTE_MATCHING_LIMIT = 2000;
+
+/**
+ * Promote every delayed job that matches, not only the ones on screen: the jobs of
+ * one BullMQ Pro group (`groupId`), the ones whose id / name / data contains
+ * `query`, or both. `cursor` continues a previous call.
+ */
+export const promoteMatchingSchema = z
+  .object({
+    query: z.string().max(500).optional(),
+    groupId: z.string().min(1).max(200).optional(),
+    cursor: z.string().max(20).optional(),
+  })
+  .refine((v) => !!v.query?.trim() || v.groupId !== undefined, { message: "query or groupId is required", path: ["query"] });
+export type PromoteMatchingInput = z.infer<typeof promoteMatchingSchema>;
+
+export interface PromoteMatchingResult {
+  /** delayed jobs that matched in this call */
+  matched: number;
+  promoted: number;
+  /** at most 20 of the failures, with BullMQ's reason; `failedCount` has them all */
+  failed: BulkJobFailure[];
+  failedCount: number;
+  /** jobs of the delayed state inspected in this call, and the state's size */
+  scanned: number;
+  total: number;
+  /** pass back as `cursor` to go on; null when the whole state was scanned */
+  nextCursor: string | null;
+}
+
 export const listJobsQuerySchema = z.object({
   state: jobStateSchema.default("waiting"),
   /** BullMQ Pro: restrict to a group's waiting list (state is ignored when set) */
@@ -1025,12 +1232,20 @@ export const listJobsQuerySchema = z.object({
   order: z.enum(["asc", "desc"]).default("desc"),
 });
 
-export const searchJobsQuerySchema = z.object({
-  state: jobStateSchema.default("failed"),
-  q: z.string().min(1).max(500),
-  cursor: z.string().optional(),
-  limit: z.coerce.number().int().min(1).max(200).default(50),
-});
+export const searchJobsQuerySchema = z
+  .object({
+    state: jobStateSchema.default("failed"),
+    q: z.string().max(500).default(""),
+    /**
+     * BullMQ Pro: only jobs of this group (exact id). A delayed, failed or completed
+     * job sits in the queue-wide state key, not under its group, so this is the only
+     * way to list a group's jobs outside `waiting`. With it, `q` may be empty.
+     */
+    groupId: z.string().min(1).max(200).optional(),
+    cursor: z.string().optional(),
+    limit: z.coerce.number().int().min(1).max(200).default(50),
+  })
+  .refine((v) => v.q.length > 0 || v.groupId !== undefined, { message: "q or groupId is required", path: ["q"] });
 
 // ---------------------------------------------------------------------------
 // Hidden queues (free)
@@ -1383,6 +1598,11 @@ export const AUDIT_ACTIONS = [
   "queue.drain",
   "queue.obliterate",
   "scheduler.remove",
+  "job.promote_matching",
+  // BullMQ Pro groups
+  "group.pause",
+  "group.resume",
+  "group.drain",
   "queue.hide",
   "queue.unhide",
   // settings
@@ -1417,6 +1637,12 @@ export const AUDIT_ACTIONS = [
   "auth.sso_denied",
   /** First SSO sign-in created a viewer account (auto-provisioning is on). */
   "auth.sso_provisioned",
+  // MCP
+  "mcp.settings_update",
+  /** A user approved an MCP client (Claude) on the consent screen, or refused it. */
+  "mcp.authorize",
+  /** A connected MCP client was disconnected from Settings → MCP. */
+  "mcp.revoke",
 ] as const;
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];
 
@@ -1439,6 +1665,10 @@ export const AUDIT_ACTION_LABEL: Record<AuditAction, string> = {
   "queue.drain": "drained the queue",
   "queue.obliterate": "obliterated the queue",
   "scheduler.remove": "removed a job scheduler",
+  "job.promote_matching": "promoted every matching delayed job",
+  "group.pause": "paused a group",
+  "group.resume": "resumed a group",
+  "group.drain": "drained a group",
   "queue.hide": "hid the queue",
   "queue.unhide": "unhid the queue",
   "connection.create": "added a connection",
@@ -1464,6 +1694,9 @@ export const AUDIT_ACTION_LABEL: Record<AuditAction, string> = {
   "auth.sso_login": "signed in with SSO",
   "auth.sso_denied": "was refused by SSO (no account)",
   "auth.sso_provisioned": "joined through SSO (auto-provisioned)",
+  "mcp.settings_update": "changed the MCP access level",
+  "mcp.authorize": "connected an MCP client",
+  "mcp.revoke": "disconnected an MCP client",
 };
 
 /**
@@ -1492,6 +1725,9 @@ export const AUDIT_HIGH_RISK_ACTIONS: readonly AuditAction[] = [
   "sso.provider_delete",
   // A new account appeared without an admin creating it.
   "auth.sso_provisioned",
+  // Who an AI client can act as, and whether it can write, is an access change.
+  "mcp.settings_update",
+  "mcp.authorize",
 ];
 
 export interface AuditEntry {
@@ -1585,6 +1821,135 @@ export const createFlowEdgeSchema = z.object({
   to: z.string().min(1),
   label: z.string().max(120).nullable().optional(),
 });
+
+// ---------------------------------------------------------------------------
+// Flow maps (Pro, feature "flows")
+//
+// A flow map is a named diagram of the queues ONE process goes through
+// ("Checkout": checkout → payment-capture → email-send | pick-pack), drawn by a
+// person or by an MCP client. Maps nest like folders (optional: a map at the
+// root is fine) but each map has its own diagram; a parent does not merge its
+// children's. A node is "connection + queue", so one map may span several
+// Redis/Postgres connections, and a queue may appear in many maps.
+//
+// Detected maps are computed, read-only: each connected group of queues that
+// BullMQ's FlowProducer links (the `parent` field on child jobs) becomes one,
+// named after the queue every edge leads to. Detected edges are also drawn on
+// manual maps whenever both of their queues are on the map.
+// ---------------------------------------------------------------------------
+
+/** A queue on a map. The node id is `${connectionId}:${queueName}` (connection ids never contain ":"). */
+export interface FlowMapNodeRef {
+  connectionId: string;
+  queueName: string;
+}
+
+export function flowMapNodeId(ref: FlowMapNodeRef): string {
+  return `${ref.connectionId}:${ref.queueName}`;
+}
+
+export interface FlowMapNode extends FlowMapNodeRef {
+  id: string;
+  /** Saved position on the canvas, shared by the team. null = never placed: the UI lays it out. */
+  x: number | null;
+  y: number | null;
+  connectionName: string;
+  /** Live counts; EMPTY_COUNTS when the queue is not discovered or the connection is down. */
+  counts: QueueCounts;
+  isPaused: boolean;
+  /** The queue was not found on its connection (renamed, not created yet, connection deleted or down). */
+  missing: boolean;
+}
+
+export interface FlowMapEdge {
+  /** manual: the row id; detected: `d:${fromNodeId}->${toNodeId}` */
+  id: string;
+  /** node ids */
+  from: string;
+  to: string;
+  source: "manual" | "detected";
+  label: string | null;
+  /** detected only: sampled jobs that evidenced the edge */
+  evidence: number;
+}
+
+export type FlowMapKind = "manual" | "detected";
+
+export interface FlowMapSummary {
+  /** manual: a nanoid; detected: `detected:${connectionId}:${rootQueue}` */
+  id: string;
+  kind: FlowMapKind;
+  name: string;
+  description: string | null;
+  /** manual only; detected maps are always at the root of their connection's section */
+  parentId: string | null;
+  position: number;
+  /** detected only: the connection the FlowProducer flow lives on */
+  connectionId: string | null;
+  nodeCount: number;
+  edgeCount: number;
+}
+
+export interface FlowMap extends FlowMapSummary {
+  nodes: FlowMapNode[];
+  edges: FlowMapEdge[];
+}
+
+export interface FlowMapsResponse {
+  maps: FlowMapSummary[];
+  /** false while detection is still sampling a connection (big keyspace) or a connection is down */
+  detectedComplete: boolean;
+}
+
+export const flowMapNodeRefSchema = z.object({
+  connectionId: z.string().min(1).max(64),
+  queueName: z.string().min(1).max(255),
+});
+
+export const createFlowMapSchema = z.object({
+  name: z.string().trim().min(1).max(80),
+  description: z.string().max(500).nullable().optional(),
+  parentId: z.string().nullable().optional(),
+});
+export type CreateFlowMapInput = z.infer<typeof createFlowMapSchema>;
+
+export const updateFlowMapSchema = z.object({
+  name: z.string().trim().min(1).max(80).optional(),
+  description: z.string().max(500).nullable().optional(),
+  /** null moves the map to the root */
+  parentId: z.string().nullable().optional(),
+  position: z.number().int().min(0).optional(),
+});
+export type UpdateFlowMapInput = z.infer<typeof updateFlowMapSchema>;
+
+/** Idempotent: adding a queue that is already on the map updates its position if one is given. */
+export const addFlowMapNodeSchema = flowMapNodeRefSchema.extend({
+  x: z.number().finite().nullable().optional(),
+  y: z.number().finite().nullable().optional(),
+});
+export type AddFlowMapNodeInput = z.infer<typeof addFlowMapNodeSchema>;
+
+/** Saves where the team dragged the queues. Unknown node ids are ignored. */
+export const saveFlowMapLayoutSchema = z.object({
+  positions: z
+    .array(z.object({ nodeId: z.string().min(1).max(320), x: z.number().finite(), y: z.number().finite() }))
+    .max(2000),
+});
+export type SaveFlowMapLayoutInput = z.infer<typeof saveFlowMapLayoutSchema>;
+
+/**
+ * An arrow "work goes from `from` to `to`". Either end not on the map yet is
+ * added to it, so one call draws "checkout → payment-capture" from scratch.
+ * Idempotent on (from, to): drawing it again only updates the label.
+ */
+export const createFlowMapEdgeSchema = z.object({
+  from: flowMapNodeRefSchema,
+  to: flowMapNodeRefSchema,
+  label: z.string().max(120).nullable().optional(),
+});
+export type CreateFlowMapEdgeInput = z.infer<typeof createFlowMapEdgeSchema>;
+
+export const updateFlowMapEdgeSchema = z.object({ label: z.string().max(120).nullable() });
 
 // ---------------------------------------------------------------------------
 // Job tree (parent/child of ONE flow instance) — free edition
@@ -1692,7 +2057,7 @@ export function hasRole(userRole: Role, required: Role): boolean {
   return ROLE_RANK[userRole] >= ROLE_RANK[required];
 }
 
-/** Redact the password part of a redis URL for display */
+/** Redact the password part of a connection URL (redis:// or postgres://) for display */
 export function redactRedisUrl(url: string): string {
   try {
     const u = new URL(url);
@@ -1701,4 +2066,92 @@ export function redactRedisUrl(url: string): string {
   } catch {
     return url.replace(/:\/\/([^:@/]*):([^@/]*)@/, "://$1:****@");
   }
+}
+
+// ---------------------------------------------------------------------------
+// MCP (Pro) — Claude and other MCP clients reading and operating queues
+// ---------------------------------------------------------------------------
+//
+// One rule for the MCP and the dashboard: every tool is a call to an /api route,
+// made as the user who connected the client. What that user cannot do in the
+// dashboard, the client cannot do either. Docs: ARCHITECTURE.md → MCP.
+
+/**
+ * What an MCP client may do. `off` exists only as the admin's setting.
+ *  - read  : the viewer routes (queues, jobs, logs, schedulers, groups)
+ *  - write : read + the operator job and queue actions. Never drain, obliterate
+ *            or clean: for those the client gets a link to confirm in the dashboard.
+ */
+export const MCP_ACCESS_LEVELS = ["off", "read", "write"] as const;
+export type McpAccessLevel = (typeof MCP_ACCESS_LEVELS)[number];
+export type McpGrantAccess = Exclude<McpAccessLevel, "off">;
+
+const MCP_ACCESS_RANK: Record<McpAccessLevel, number> = { off: 0, read: 1, write: 2 };
+
+/** The most a user of this role can grant: a viewer can only ever read. */
+export function mcpRoleCeiling(role: Role): McpGrantAccess {
+  return hasRole(role, "operator") ? "write" : "read";
+}
+
+/**
+ * Effective access = the lowest of the admin's ceiling, what the user chose on
+ * the consent screen and what their role allows. Computed on every call, so a
+ * lower ceiling, a demoted role or a disabled user takes effect at once.
+ */
+export function mcpEffectiveAccess(ceiling: McpAccessLevel, granted: McpGrantAccess, role: Role): McpAccessLevel {
+  const levels = [ceiling, granted, mcpRoleCeiling(role)];
+  return levels.reduce((min, l) => (MCP_ACCESS_RANK[l] < MCP_ACCESS_RANK[min] ? l : min));
+}
+
+export interface McpSettings {
+  /** the admin's ceiling for every MCP client on this install. Default off. */
+  maxAccess: McpAccessLevel;
+  /** the URL to paste into Claude: `${PUBLIC_URL}/mcp` */
+  endpoint: string;
+  /**
+   * false when PUBLIC_URL is plain http or a loopback/private host: claude.ai and
+   * Claude Desktop connect from Anthropic's cloud and cannot reach it. Claude Code,
+   * which connects from the user's machine, still can.
+   */
+  reachableFromCloud: boolean;
+}
+
+export const updateMcpSettingsSchema = z.object({ maxAccess: z.enum(MCP_ACCESS_LEVELS) });
+export type UpdateMcpSettingsInput = z.infer<typeof updateMcpSettingsSchema>;
+
+/** One approved client: a consent, and the refresh-token family behind it. */
+export interface McpGrant {
+  id: string;
+  clientName: string;
+  /** host of the redirect URI, e.g. "claude.ai" or "localhost" */
+  redirectHost: string;
+  access: McpGrantAccess;
+  userId: string;
+  userEmail: string;
+  userName: string;
+  createdAt: string;
+  lastUsedAt: string | null;
+}
+
+/** What the consent screen shows. `request` is the signed authorize request. */
+export interface McpConsentInfo {
+  clientName: string;
+  redirectHost: string;
+  /** what the client asked for (scope), before any ceiling */
+  requested: McpGrantAccess;
+  maxAccess: McpAccessLevel;
+  /** the most this user can approve: min(maxAccess, role ceiling) */
+  allowed: McpAccessLevel;
+}
+
+export const mcpConsentDecisionSchema = z.object({
+  request: z.string().min(1).max(4096),
+  approve: z.boolean(),
+  access: z.enum(["read", "write"]).default("read"),
+});
+export type McpConsentDecisionInput = z.input<typeof mcpConsentDecisionSchema>;
+
+export interface McpConsentDecision {
+  /** where the browser goes next: the client's redirect URI with code or error */
+  redirectTo: string;
 }

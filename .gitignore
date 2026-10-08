@@ -11,6 +11,8 @@ coverage
 .turbo
 apps/web/dist
 apps/server/public
+# local SQLite database (DATABASE_URL unset)
+apps/server/data/
 keys/
 *.tsbuildinfo
 

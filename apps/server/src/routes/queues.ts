@@ -1,4 +1,5 @@
 import {
+  GROUP_WAITING_CAP,
   cleanQueueSchema,
   listSchedulersQuerySchema,
   pauseQueueSchema,
@@ -28,7 +29,7 @@ export async function queueRoutes(app: FastifyInstance): Promise<void> {
     const { id, queue } = request.params;
     const row = await app.ctx.connections.getRow(id);
     const inspector = app.ctx.connections.inspectorFor(row);
-    const stats = await withRedis(() => inspector.getQueueStats([queue], { withMetrics: true }));
+    const stats = await withRedis(() => inspector.getQueueStats([queue], { withMetrics: true, groupWaitingCap: GROUP_WAITING_CAP }));
     const s = stats[queue];
     if (!s) throw notFound("Queue");
     const summary: QueueSummary = {
@@ -43,6 +44,7 @@ export async function queueRoutes(app: FastifyInstance): Promise<void> {
       rates: s.rates,
     };
     if (s.metrics) summary.metrics = s.metrics;
+    if (s.groupWaiting) summary.groupWaiting = { jobs: s.groupWaiting.jobs, complete: s.groupWaiting.groups >= s.groupsCount };
     return summary;
   });
 

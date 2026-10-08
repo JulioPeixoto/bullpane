@@ -23,14 +23,19 @@ import {
   type JobTreeNode,
   type JobsPage,
   type JobSummary,
+  type PromoteJobResult,
+  type PromoteMatchingResult,
+  type SchedulerPromoteMode,
   type QueueCounts,
   type QueueMetrics,
   type RedisServerInfo,
   type QueueRates,
   type QueueSetup,
 } from "@bullpane/shared";
+import type { BullmqProModule, BullmqProQueue } from "./bullmqPro.js";
 import { createBullmqConnection, createReadClient } from "./connection.js";
 import {
+  GROUP_ID_FIELDS,
   GROUP_KEY,
   JOB_KEY,
   JOB_SUMMARY_FIELDS,
@@ -55,6 +60,8 @@ import {
   hashToSummary,
   parseScore,
   metricPoints,
+  parseGroupId,
+  parseOpts,
   parseTreeNode,
   rowToHash,
   rowToScheduler,
@@ -75,13 +82,14 @@ import type {
   WindowCounts,
   WindowMetrics,
   WindowMetricsRequest,
-} from "./types.js";
+} from "@bullpane/inspector";
 import { errorMessage, globToRegExp, parseRedisInfo, toFloatOrNull, toInt, toIntOrNull, totalKeysFromInfo } from "./util.js";
 
 const DEFAULTS: Required<InspectorOptions> = {
   discoveryTtlMs: 30_000,
   previewBytes: 2048,
   maxScanPerCall: 1000,
+  groupScanPerCall: 10_000,
   connectTimeoutMs: 5000,
   maxScanIterations: 2000,
   discoveryScanBudgetMs: 1500,
@@ -89,7 +97,22 @@ const DEFAULTS: Required<InspectorOptions> = {
   listFieldCapBytes: 32 * 1024,
   searchFieldCapBytes: 256 * 1024,
   searchByteBudget: 8 * 1024 * 1024,
+  bullmqPro: null,
 };
+
+/** How long "is this a BullMQ Pro queue" is trusted before it is read again. */
+const PRO_QUEUE_TTL_MS = 30_000;
+
+/**
+ * A write core bullmq would get wrong on a BullMQ Pro group, without Pro's API to
+ * do it right. A 409 with this code tells the operator what to install.
+ */
+function proApiRequired(what: string, consequence: string): Error {
+  return new Error(
+    `bullmq_pro_api_required: ${what} needs BullMQ Pro's API, which is not installed next to Bullpane ` +
+      `(see docs/BULLMQ-PRO.md). Core bullmq would ${consequence}.`,
+  );
+}
 
 /**
  * SCAN COUNT hint. One SCAN with COUNT 1000 is ~0.3 ms on a 3M-key Redis; with
@@ -106,6 +129,8 @@ const STATS_METRIC_POINTS = 60;
  * about the same time and keeps Redis breathing.
  */
 const BULK_CONCURRENCY = 8;
+/** Search slices one promoteMatching call may run before handing back a cursor. */
+const PROMOTE_MATCHING_MAX_CALLS = 50;
 /** Trailing window for QueueRates (success / failure %). */
 const DEFAULT_RATE_WINDOW_MINUTES = 60;
 /**
@@ -154,17 +179,22 @@ export class RedisInspector implements Inspector {
 
   /** bullmq Queue per queue name, created lazily for writes only. */
   private readonly queues = new Map<string, Queue>();
+  private readonly pro: BullmqProModule | null;
+  private readonly proQueues = new Map<string, { pro: boolean; at: number }>();
   /** In cluster mode bullmq gets its own Cluster client, which we own. */
   private bullmqCluster: Cluster | null = null;
   private closed = false;
 
   constructor(config: InspectorConnectionConfig, options: InspectorOptions = {}) {
+    if (config.kind && config.kind !== "redis") throw new Error(`RedisInspector cannot open a ${config.kind} connection`);
     this.config = {
       ...config,
+      kind: "redis",
       prefix: config.prefix ?? "bull",
       cluster: config.cluster ?? false,
     };
     this.opts = { ...DEFAULTS, ...stripUndefined(options) };
+    this.pro = (this.opts.bullmqPro as BullmqProModule | null) ?? null;
     this.filter = config.queueFilter ? globToRegExp(config.queueFilter) : null;
     this.client = createReadClient(this.config, this.opts.connectTimeoutMs);
     // Swallow error events: every command already rejects with the same error; an
@@ -484,7 +514,7 @@ export class RedisInspector implements Inspector {
    */
   async getQueueStats(
     queueNames: string[],
-    opts: { withMetrics?: boolean; rateWindowMinutes?: number } = {},
+    opts: { withMetrics?: boolean; rateWindowMinutes?: number; groupWaitingCap?: number } = {},
   ): Promise<Record<string, QueueStats>> {
     const out: Record<string, QueueStats> = {};
     if (queueNames.length === 0) return out;
@@ -492,18 +522,19 @@ export class RedisInspector implements Inspector {
     const withMetrics = opts.withMetrics ? 1 : 0;
     const windowMinutes = opts.rateWindowMinutes ?? DEFAULT_RATE_WINDOW_MINUTES;
     const since = Date.now() - windowMinutes * 60_000;
+    const groupCap = Math.max(0, Math.trunc(opts.groupWaitingCap ?? 0));
 
     let replies: Array<LuaReply | null>;
     if (c instanceof Cluster) {
       replies = await Promise.all(
         queueNames.map((q) =>
-          callScript(c, "queueStats", [...this.statsKeys(q), withMetrics, STATS_METRIC_POINTS, since, queueKeyPrefix(this.config.prefix, q)]).catch(() => null),
+          callScript(c, "queueStats", [...this.statsKeys(q), withMetrics, STATS_METRIC_POINTS, since, queueKeyPrefix(this.config.prefix, q), groupCap]).catch(() => null),
         ),
       );
     } else {
       const pipeline = c.pipeline();
       for (const q of queueNames) {
-        pipelineScript(pipeline, "queueStats", [...this.statsKeys(q), withMetrics, STATS_METRIC_POINTS, since, queueKeyPrefix(this.config.prefix, q)]);
+        pipelineScript(pipeline, "queueStats", [...this.statsKeys(q), withMetrics, STATS_METRIC_POINTS, since, queueKeyPrefix(this.config.prefix, q), groupCap]);
       }
       const results = (await pipeline.exec()) ?? [];
       replies = results.map(([err, reply]) => (err ? null : (reply as LuaReply)));
@@ -512,7 +543,7 @@ export class RedisInspector implements Inspector {
     queueNames.forEach((name, i) => {
       const reply = replies[i];
       if (reply === null || reply === undefined) return; // script error for this queue: leave it out
-      out[name] = parseStats(reply, withMetrics === 1, windowMinutes);
+      out[name] = parseStats(reply, withMetrics === 1, windowMinutes, groupCap > 0);
     });
     return out;
   }
@@ -653,27 +684,33 @@ export class RedisInspector implements Inspector {
    * are not read at all), plain substring match done in Lua. The cursor is the
    * index of the next job (newest = 0). Measured: 1000 × 1 MB jobs used to hold
    * Redis for 13 s per call; both bounds keep a call in the milliseconds.
+   *
+   * `groupId` filters before any payload is read (one HMGET of the group fields
+   * and opts per job), so a group scan covers groupScanPerCall jobs per call.
    */
   async searchJobs(
     queueName: string,
     state: JobState,
     query: string,
-    opts: { cursor?: string | null; limit: number },
+    opts: { cursor?: string | null; limit: number; groupId?: string },
   ): Promise<JobSearchResult> {
     const c = await this.ensureConnected();
     const cursor = Math.max(0, toInt(opts.cursor ?? "0", 0));
+    const group = opts.groupId ?? "";
     const reply = asArray(
       await callScript(c, "getJobsSearch", [
         stateKey(this.config.prefix, queueName, state),
         STATE_KEY[state].type,
         cursor,
-        this.opts.maxScanPerCall,
+        group ? this.opts.groupScanPerCall : this.opts.maxScanPerCall,
         query.toLowerCase(),
         Math.max(1, opts.limit),
         queueKeyPrefix(this.config.prefix, queueName),
         this.opts.previewBytes,
         this.opts.searchFieldCapBytes,
         this.opts.searchByteBudget,
+        group,
+        GROUP_ID_FIELDS.join(","),
         ...JOB_SUMMARY_FIELDS,
       ]),
     );
@@ -685,6 +722,51 @@ export class RedisInspector implements Inspector {
       total: asNumber(reply[3]),
       skippedLargePayloads: asNumber(reply[4]),
     };
+  }
+
+  /**
+   * The search script over `delayed`, with payload previews cut to 0 bytes: only
+   * the ids are needed. Runs slice after slice until `limit` matches or
+   * PROMOTE_MATCHING_MAX_CALLS calls, so one request stays bounded on a state of
+   * millions. Each slice is the same bounded call the search box makes.
+   */
+  private async scanDelayedIds(
+    queueName: string,
+    match: { query: string; groupId: string },
+    cursor: number,
+    limit: number,
+  ): Promise<{ ids: string[]; scanned: number; total: number; end: number; exhausted: boolean }> {
+    const c = await this.ensureConnected();
+    const ids: string[] = [];
+    let scanned = 0;
+    let total = 0;
+    let at = cursor;
+    for (let call = 0; call < PROMOTE_MATCHING_MAX_CALLS && ids.length < limit; call++) {
+      const reply = asArray(
+        await callScript(c, "getJobsSearch", [
+          stateKey(this.config.prefix, queueName, "delayed"),
+          STATE_KEY.delayed.type,
+          at,
+          match.groupId && !match.query ? this.opts.groupScanPerCall : this.opts.maxScanPerCall,
+          match.query.toLowerCase(),
+          limit - ids.length,
+          queueKeyPrefix(this.config.prefix, queueName),
+          0,
+          this.opts.searchFieldCapBytes,
+          this.opts.searchByteBudget,
+          match.groupId,
+          GROUP_ID_FIELDS.join(","),
+          ...JOB_SUMMARY_FIELDS,
+        ]),
+      );
+      for (const row of asArray(reply[0])) ids.push(String(asArray(row)[0]));
+      scanned += asNumber(reply[2]);
+      total = asNumber(reply[3]);
+      const next = asNumber(reply[1], -1);
+      if (next < 0) return { ids, scanned, total, end: at + asNumber(reply[2]), exhausted: true };
+      at = next;
+    }
+    return { ids, scanned, total, end: at, exhausted: false };
   }
 
   async getJob(queueName: string, jobId: string): Promise<JobDetail | null> {
@@ -1109,15 +1191,57 @@ export class RedisInspector implements Inspector {
   // writes (official bullmq API; we never reimplement its Lua)
   // ---------------------------------------------------------------------------
 
+  get bullmqProApi(): boolean {
+    return this.pro !== null;
+  }
+
+  /**
+   * Is this a BullMQ Pro queue: meta.version says bullmq-pro, or a group status
+   * zset / the metas zset exists (the same signals as queueStats.lua). One HGET and
+   * one EXISTS on keys of this queue, cached PRO_QUEUE_TTL_MS, and only asked
+   * before a write.
+   */
+  private async isProQueue(queueName: string): Promise<boolean> {
+    const cached = this.proQueues.get(queueName);
+    if (cached && Date.now() - cached.at < PRO_QUEUE_TTL_MS) return cached.pro;
+    const c = await this.ensureConnected();
+    const p = queueKeyPrefix(this.config.prefix, queueName);
+    const [version, groupKeys] = await Promise.all([
+      c.hget(p + QUEUE_KEY.meta, "version"),
+      c.exists(p + GROUP_KEY.groups, p + GROUP_KEY.limit, p + GROUP_KEY.max, p + GROUP_KEY.paused, p + GROUP_KEY.metas),
+    ]);
+    const pro = (version ?? "").startsWith("bullmq-pro") || groupKeys > 0;
+    this.proQueues.set(queueName, { pro, at: Date.now() });
+    return pro;
+  }
+
+  /**
+   * The group a job belongs to, from the same fields the reads use (GROUP_ID_FIELDS,
+   * then opts.group.id). One HMGET of a single job hash.
+   */
+  private async jobGroup(queueName: string, jobId: string): Promise<string | null> {
+    const c = await this.ensureConnected();
+    const values = await c.hmget(queueKeyPrefix(this.config.prefix, queueName) + JOB_KEY.hash(jobId), ...GROUP_ID_FIELDS, "opts");
+    const opts = values.pop() ?? null;
+    return parseGroupId(Object.fromEntries(GROUP_ID_FIELDS.map((f, i) => [f, values[i] ?? undefined])), parseOpts({ opts: opts ?? undefined }));
+  }
+
   /**
    * bullmq needs a client it owns. We hand it connection options (or, for cluster,
    * a Cluster instance we own) and cache one Queue per name. `skipMetasUpdate` keeps
    * Queue construction from writing `meta.opts.maxLenEvents` on the customer's queue.
+   *
+   * With BullMQ Pro's API loaded, a Pro queue (or a grouped job's queue) gets a
+   * QueuePro, so job.promote() / retry() / remove() and queue.add() run Pro's
+   * group-aware scripts. Other queues keep core bullmq: Pro's scripts follow its
+   * own bullmq version, not the one the customer's core workers run.
    */
-  private async getQueue(queueName: string): Promise<Queue> {
+  private async getQueue(queueName: string, opts: { grouped?: boolean } = {}): Promise<Queue> {
     // Fail fast on a dead Redis instead of letting bullmq wait for a reconnect.
     await this.ensureConnected();
-    let q = this.queues.get(queueName);
+    const pro = this.pro !== null && (opts.grouped === true || (await this.isProQueue(queueName)));
+    const cacheKey = `${pro ? "pro" : "core"}:${queueName}`;
+    let q = this.queues.get(cacheKey);
     if (q) return q;
     const { connection, ownedCluster } = createBullmqConnection(this.config, this.opts.connectTimeoutMs);
     if (ownedCluster) {
@@ -1128,31 +1252,39 @@ export class RedisInspector implements Inspector {
         this.bullmqCluster = ownedCluster;
       }
     }
-    q = new Queue(queueName, {
-      connection: this.bullmqCluster ?? connection,
-      prefix: this.config.prefix,
-      skipMetasUpdate: true,
-    });
+    const queueOpts = { connection: this.bullmqCluster ?? connection, prefix: this.config.prefix, skipMetasUpdate: true };
+    q = pro && this.pro ? new this.pro.QueuePro(queueName, queueOpts) : new Queue(queueName, queueOpts);
     q.on("error", () => undefined);
-    this.queues.set(queueName, q);
+    this.queues.set(cacheKey, q);
     return q;
   }
 
-  private async getBullJob(queueName: string, jobId: string): Promise<Job> {
-    const queue = await this.getQueue(queueName);
-    const job = await Job.fromId(queue, jobId);
+  /** The QueuePro of a queue, for the group actions that only Pro has. */
+  private async getProQueue(queueName: string, what: string): Promise<BullmqProQueue> {
+    if (!this.pro) throw proApiRequired(what, "not be able to do it at all: group operations only exist in BullMQ Pro");
+    return (await this.getQueue(queueName, { grouped: true })) as BullmqProQueue;
+  }
+
+  /** queue.getJob uses the queue's own Job class, so a QueuePro hands back a JobPro. */
+  private async getBullJob(queueName: string, jobId: string, group: string | null = null): Promise<Job> {
+    const queue = await this.getQueue(queueName, { grouped: group !== null });
+    const job = await queue.getJob(jobId);
     if (!job) throw new Error("job_not_found");
     return job;
   }
 
   async addJob(queueName: string, name: string, data: unknown, opts: Record<string, unknown> = {}): Promise<{ id: string }> {
-    const queue = await this.getQueue(queueName);
+    const grouped = typeof opts.group === "object" && opts.group !== null;
+    if (grouped && !this.pro) throw proApiRequired("adding a job to a group", "ignore opts.group and run the job outside any group");
+    const queue = await this.getQueue(queueName, { grouped });
     const job = await queue.add(name, data, opts as JobsOptions);
     return { id: String(job.id) };
   }
 
   async retryJob(queueName: string, jobId: string): Promise<void> {
-    const job = await this.getBullJob(queueName, jobId);
+    const group = await this.jobGroup(queueName, jobId);
+    if (group !== null && !this.pro) throw proApiRequired(`retrying a job of group ${group}`, "put it back in the queue-wide wait list, outside its group");
+    const job = await this.getBullJob(queueName, jobId, group);
     const state = await job.getState();
     if (state !== "failed" && state !== "completed") {
       throw new Error(`cannot_retry_job_in_state_${state}`);
@@ -1161,13 +1293,49 @@ export class RedisInspector implements Inspector {
   }
 
   async removeJob(queueName: string, jobId: string): Promise<void> {
-    const job = await this.getBullJob(queueName, jobId);
+    const group = await this.jobGroup(queueName, jobId);
+    const job = await this.getBullJob(queueName, jobId, group);
+    if (group !== null && !this.pro) {
+      // Delayed, completed and failed jobs are in the queue-wide keys, which core
+      // bullmq cleans fine. A waiting job is in the group's list ("unknown" to core).
+      const state = await job.getState();
+      if (state !== "delayed" && state !== "completed" && state !== "failed") {
+        throw proApiRequired(`removing a ${state === "unknown" ? "waiting" : state} job of group ${group}`, "delete the job and leave its id in the group's list");
+      }
+    }
     await job.remove();
   }
 
-  async promoteJob(queueName: string, jobId: string): Promise<void> {
-    const job = await this.getBullJob(queueName, jobId);
-    await job.promote();
+  async promoteJob(queueName: string, jobId: string, scheduler: SchedulerPromoteMode = "run_copy"): Promise<PromoteJobResult> {
+    const group = await this.jobGroup(queueName, jobId);
+    if (group !== null && !this.pro) {
+      throw proApiRequired(
+        `promoting a job of group ${group}`,
+        "move it to the queue-wide wait list, where it runs outside its group: no group concurrency or rate limit, even while the group is paused",
+      );
+    }
+    const job = await this.getBullJob(queueName, jobId, group);
+    if (!job.repeatJobKey) {
+      await job.promote();
+      return { mode: "promoted" };
+    }
+    // A job scheduler's delayed job is its next iteration, and the worker computes the one
+    // after it from this job's scheduled time: promoting it skips a run. The operator chose.
+    if (scheduler === "skip_next") {
+      await job.promote();
+      return { mode: "skipped_next", schedulerId: job.repeatJobKey };
+    }
+    const state = await job.getState();
+    if (state !== "delayed") {
+      throw new Error(`cannot_promote_job_in_state_${state}`);
+    }
+    const { repeat, jobId: _jobId, repeatJobKey, prevMillis, delay, timestamp, ...opts } = job.opts as JobsOptions & {
+      repeat?: unknown;
+      repeatJobKey?: string;
+      prevMillis?: number;
+    };
+    const copy = await this.addJob(queueName, job.name, job.data, opts);
+    return { mode: "ran_copy", jobId: copy.id, schedulerId: job.repeatJobKey };
   }
 
   /**
@@ -1200,6 +1368,38 @@ export class RedisInspector implements Inspector {
       await Promise.all(ids.slice(i, i + BULK_CONCURRENCY).map(run));
     }
     return { action, ok, failed, requested: ids.length };
+  }
+
+  async promoteMatching(
+    queueName: string,
+    match: { query?: string; groupId?: string },
+    opts: { cursor?: string | null; limit: number },
+  ): Promise<PromoteMatchingResult> {
+    const query = match.query?.trim() ?? "";
+    const groupId = match.groupId ?? "";
+    if (!query && !groupId) throw new Error("query_or_group_required");
+    const cursor = Math.max(0, toInt(opts.cursor ?? "0", 0));
+    const scan = await this.scanDelayedIds(queueName, { query, groupId }, cursor, Math.max(1, opts.limit));
+
+    let promoted = 0;
+    const failed: BulkJobFailure[] = [];
+    let failedCount = 0;
+    const run = async (jobId: string): Promise<void> => {
+      try {
+        await this.promoteJob(queueName, jobId);
+        promoted++;
+      } catch (err) {
+        failedCount++;
+        if (failed.length < 20) failed.push({ jobId, reason: errorMessage(err) });
+      }
+    };
+    for (let i = 0; i < scan.ids.length; i += BULK_CONCURRENCY) {
+      await Promise.all(scan.ids.slice(i, i + BULK_CONCURRENCY).map(run));
+    }
+    // The cursor is an index into `delayed`, newest first. Every promoted job left
+    // the part already scanned, so the rest of the state moved up by that many.
+    const next = scan.exhausted ? null : String(Math.max(0, scan.end - promoted));
+    return { matched: scan.ids.length, promoted, failed, failedCount, scanned: scan.scanned, total: scan.total, nextCursor: next };
   }
 
   /**
@@ -1240,22 +1440,61 @@ export class RedisInspector implements Inspector {
   }
 
   async retryAll(queueName: string, state: "failed" | "completed"): Promise<void> {
+    if (!this.pro && (await this.isProQueue(queueName))) {
+      throw proApiRequired("retrying every job of a BullMQ Pro queue", "put grouped jobs back in the queue-wide wait list, outside their groups");
+    }
     const queue = await this.getQueue(queueName);
     await queue.retryJobs({ state });
   }
 
+  /**
+   * On a Pro queue the waiting jobs of every group live in the groups' own lists,
+   * which core drain does not touch: QueuePro.deleteGroups empties them too.
+   */
   async drainQueue(queueName: string, includeDelayed: boolean): Promise<void> {
+    const proQueue = await this.isProQueue(queueName);
+    if (proQueue && !this.pro) {
+      throw proApiRequired("draining a BullMQ Pro queue", "leave every group's waiting jobs in place and report the queue drained");
+    }
     const queue = await this.getQueue(queueName);
     await queue.drain(includeDelayed);
+    if (proQueue) await (queue as BullmqProQueue).deleteGroups();
   }
 
   async obliterateQueue(queueName: string): Promise<void> {
+    if (!this.pro && (await this.isProQueue(queueName))) {
+      // QueuePro overrides obliterate; core's does not know the group keys.
+      throw proApiRequired("obliterating a BullMQ Pro queue", "leave the group keys behind");
+    }
     const queue = await this.getQueue(queueName);
     await queue.obliterate({ force: true });
     // the meta key is gone, so the cached discovery result is stale
-    this.queues.delete(queueName);
-    await queue.close().catch(() => undefined);
+    this.proQueues.delete(queueName);
+    for (const key of [`core:${queueName}`, `pro:${queueName}`]) {
+      const cached = this.queues.get(key);
+      this.queues.delete(key);
+      await cached?.close().catch(() => undefined);
+    }
     this.invalidateDiscovery();
+  }
+
+  // ---------------------------------------------------------------------------
+  // BullMQ Pro groups (QueuePro only; see bullmqPro.ts)
+  // ---------------------------------------------------------------------------
+
+  async pauseGroup(queueName: string, groupId: string): Promise<void> {
+    const queue = await this.getProQueue(queueName, "pausing a group");
+    await queue.pauseGroup(groupId);
+  }
+
+  async resumeGroup(queueName: string, groupId: string): Promise<void> {
+    const queue = await this.getProQueue(queueName, "resuming a group");
+    await queue.resumeGroup(groupId);
+  }
+
+  async drainGroup(queueName: string, groupId: string): Promise<void> {
+    const queue = await this.getProQueue(queueName, "draining a group");
+    await queue.deleteGroup(groupId);
   }
 }
 
@@ -1263,7 +1502,7 @@ export class RedisInspector implements Inspector {
 // helpers
 // ---------------------------------------------------------------------------
 
-function parseStats(reply: LuaReply, withMetrics: boolean, windowMinutes: number): QueueStats {
+function parseStats(reply: LuaReply, withMetrics: boolean, windowMinutes: number, withGroupWaiting = false): QueueStats {
   const r = asArray(reply);
   const counts: QueueCounts = { ...EMPTY_COUNTS };
   STATE_ORDER.forEach((state, i) => {
@@ -1332,6 +1571,9 @@ function parseStats(reply: LuaReply, withMetrics: boolean, windowMinutes: number
   };
   if (withMetrics) {
     stats.metrics = { completed: metricsCompleted, failed: metricsFailed };
+  }
+  if (withGroupWaiting && stats.groupsCount > 0) {
+    stats.groupWaiting = { jobs: asNumber(r[21]), groups: asNumber(r[22]) };
   }
   return stats;
 }

@@ -8,6 +8,11 @@ import { useGroups } from "@/api/hooks";
  * Searchable single-select over the queue's BullMQ Pro groups.
  * "" means "All groups". Typing an id that is not in the (first 200) listed
  * groups still lets you pick it, since group ids are free-form.
+ *
+ * Pro only indexes groups that have jobs waiting, running, limited or paused: a
+ * group whose jobs are all delayed (or failed, completed) is in no index. So on
+ * those tabs the groups of the jobs on screen (`pageGroups`) come first, and the
+ * waiting counts are hidden: they describe the waiting tab only.
  */
 export function GroupCombobox({
   connectionId,
@@ -16,6 +21,8 @@ export function GroupCombobox({
   onChange,
   disabled,
   className,
+  showWaiting = true,
+  pageGroups = [],
 }: {
   connectionId: string;
   queue: string;
@@ -23,6 +30,10 @@ export function GroupCombobox({
   onChange: (groupId: string) => void;
   disabled?: boolean;
   className?: string;
+  /** false outside the waiting tab, where "N waiting" is not about what is listed */
+  showWaiting?: boolean;
+  /** group ids of the jobs on screen, offered first ("on this page") */
+  pageGroups?: string[];
 }) {
   const groups = useGroups(connectionId, queue, { page: 1, pageSize: 200 });
   const [open, setOpen] = useState(false);
@@ -37,12 +48,16 @@ export function GroupCombobox({
     const t = text.trim().toLowerCase();
     const hits = list.filter((g) => !t || g.id.toLowerCase().includes(t)).slice(0, 100);
     const exact = t && list.some((g) => g.id.toLowerCase() === t);
-    const items: { id: string; label: string; waiting?: number; custom?: boolean }[] = [];
+    const onPage = pageGroups.filter((id) => !t || id.toLowerCase().includes(t)).slice(0, 50);
+    const seen = new Set(onPage);
+    const items: { id: string; label: string; waiting?: number; custom?: boolean; onPage?: boolean }[] = [];
     if (!t) items.push({ id: "", label: "All groups" });
-    items.push(...hits.map((g) => ({ id: g.id, label: g.id, waiting: g.waiting })));
-    if (t && !exact) items.push({ id: text.trim(), label: `Use "${text.trim()}"`, custom: true });
+    items.push(...onPage.map((id) => ({ id, label: id, onPage: true })));
+    items.push(...hits.filter((g) => !seen.has(g.id)).map((g) => ({ id: g.id, label: g.id, waiting: showWaiting ? g.waiting : undefined })));
+    const known = exact || onPage.some((id) => id.toLowerCase() === t);
+    if (t && !known) items.push({ id: text.trim(), label: `Use "${text.trim()}"`, custom: true });
     return items;
-  }, [list, text]);
+  }, [list, text, pageGroups, showWaiting]);
 
   useEffect(() => setIdx(0), [text, open]);
 
@@ -123,6 +138,7 @@ export function GroupCombobox({
               >
                 <span className={cn("min-w-0 flex-1 truncate", o.id && !o.custom && "font-mono")}>{o.label}</span>
                 {o.waiting != null && <span className="num text-[10px] text-fg-subtle">{formatCompact(o.waiting)} waiting</span>}
+                {o.onPage && <span className="text-[10px] text-fg-subtle">on this page</span>}
                 {selected && <Check className="size-3.5 text-accent" aria-hidden />}
               </li>
             );
