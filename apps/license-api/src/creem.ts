@@ -39,7 +39,7 @@ export interface CreemClientOptions {
   base: string;
   apiKey: string;
   fetchImpl: typeof fetch;
-  /** unix ms; defaults to Date.now. Tests pin it, like Deps.now, so a fixture never expires. */
+  /** Clock for the expiry check; defaults to Date.now. */
   now?: () => number;
 }
 
@@ -83,6 +83,10 @@ function assertUsable(lic: CreemLicense, expectedInstance: string | null, now: n
 export class CreemClient implements StoreClient {
   constructor(private readonly opts: CreemClientOptions) {}
 
+  private now(): number {
+    return (this.opts.now ?? Date.now)();
+  }
+
   async activate(key: string, label: string, _meta: Record<string, string>): Promise<StoreLicense> {
     const lic = await this.post("/v1/licenses/activate", { key, instance_name: label });
     if (!lic.instance?.id) throw new ApiFail("upstream_unavailable", "store answered without an instance id", 502);
@@ -98,10 +102,6 @@ export class CreemClient implements StoreClient {
 
   async deactivate(key: string, activationId: string): Promise<void> {
     await this.post("/v1/licenses/deactivate", { key, instance_id: activationId });
-  }
-
-  private now(): number {
-    return (this.opts.now ?? Date.now)();
   }
 
   private async post(path: string, body: unknown): Promise<CreemLicense> {
