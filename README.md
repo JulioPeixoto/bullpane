@@ -1,16 +1,63 @@
 <div align="center">
 
-# Bullpane
+<img src=".github/assets/analu-logo.png" alt="analu" width="200">
 
-**A fast, self-hosted dashboard for [BullMQ](https://bullmq.io) and BullMQ Pro.**
+# Bullpane — Analu fork
 
-[bullpane.com](https://bullpane.com) · [Live demo](https://demo.bullpane.com) · [Documentation](docs/) · [Changelog](CHANGELOG.md) · [llms.txt](https://bullpane.com/llms.txt)
+**Analu's fork of [Bullpane](https://github.com/madmorett/bullpane), the fast, self-hosted dashboard for [BullMQ](https://bullmq.io) and BullMQ Pro.**
+
+[What this fork adds](#what-this-fork-adds) · [Upstream](https://github.com/madmorett/bullpane) · [Deploy on Railway](deploy/railway/README.md) · [Documentation](docs/) · [Changelog](CHANGELOG.md)
 
 <img src="https://bullpane.com/shots/overview.jpg" alt="Bullpane overview: every queue of a connection with counts, rates and the ones that need attention" width="880">
 
 </div>
 
 ---
+
+> [!NOTE]
+> This is not the official Bullpane repository. It is Analu's fork of
+> [madmorett/bullpane](https://github.com/madmorett/bullpane), kept in sync
+> with upstream `main` and carrying a few changes for how Analu runs it.
+> From [About Bullpane](#about-bullpane) on, this README describes Bullpane
+> itself; bugs that are not about the fork's changes belong upstream.
+
+## What this fork adds
+
+- **HTTP Basic auth in front of the whole server.** Set
+  `BULLPANE_BASIC_AUTH_USER` and `BULLPANE_BASIC_AUTH_PASSWORD` and every
+  request (UI, static files, API) needs them, except `GET /api/health` so a
+  platform healthcheck works without a secret. Set both or neither: one alone
+  refuses to boot. It is one shared credential, not accounts; it exists so a
+  free-edition install can live on a public URL without being an open
+  dashboard. See [`apps/server/src/auth/basic.ts`](apps/server/src/auth/basic.ts).
+- **Pro features turned on by environment.** `BULLPANE_UNLOCKED_FEATURES` takes
+  a comma-separated list from `alerts`, `users`, `folders`, `flows`, `audit`,
+  `sso`. The edition stays "free" and only the listed features open; unlocking
+  `users` makes login mandatory, as a license key would. An unknown name fails
+  the boot, and the boot banner lists what was unlocked.
+- **Deploy on Railway.** The dashboard plus MySQL in one Railway project, next
+  to the Redis that already lives there, behind Basic auth and read-only to
+  start: [deploy/railway/README.md](deploy/railway/README.md).
+- **Refused writes say why.** The web client used to show "This action is
+  locked in the demo" for every HTTP 423, including `BULLPANE_READ_ONLY`
+  refusals on installs that are not a demo. It now shows the server's message.
+
+The published `bullpane/bullpane` image and the `bullpane` npm package are
+upstream's builds and do not include these changes. To run the fork, build it
+from this repository (`docker build --target runner -t bullpane-analu .`) or
+use the Railway setup above.
+
+### Staying in sync with upstream
+
+```sh
+git remote add upstream https://github.com/madmorett/bullpane.git   # once
+git fetch upstream
+git merge upstream/main
+```
+
+Keep fork-only changes small and self-contained so these merges stay cheap.
+
+## About Bullpane
 
 Point it at the Redis your workers already use and get queues, jobs, failures,
 progress, logs, flows and Pro groups in a UI that is pleasant to look at.
@@ -34,7 +81,8 @@ unlimited users.
 > **The free edition has no authentication at all.** Anyone who can reach the
 > URL can retry, promote and delete jobs — the dashboard says so in its own
 > header. Keep it on a private network, or unlock login, roles and the audit
-> log with Pro.
+> log with Pro. In this fork, `BULLPANE_BASIC_AUTH_*` is the third option
+> (see [What this fork adds](#what-this-fork-adds)).
 
 ## Designed for production Redis
 
@@ -105,7 +153,7 @@ Fargate and Compose.
 A throwaway Redis plus a simulator that behaves like a mid-sized company:
 
 ```sh
-git clone https://github.com/madmorett/bullpane && cd bullpane
+git clone https://github.com/JulioPeixoto/bullpane && cd bullpane
 pnpm demo        # = docker compose -f docker-compose.demo.yml up --build
 ```
 
@@ -240,10 +288,10 @@ Start with [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and
 - Audit log: per-action retention and a signed export for external auditors
 - Queue-level retention policies (auto-clean completed/failed older than N)
 
-## From the same author
+## From the upstream author
 
-Two small libraries for the same queues, dependency-free and MIT, built for the
-same production that Bullpane watches:
+Two small libraries by Bullpane's author for the same queues, dependency-free
+and MIT, built for the same production that Bullpane watches:
 
 - **[bullmq-outbox](https://github.com/madmorett/bullmq-outbox)** — when Redis is
   out of memory or unreachable, jobs land in a store you own instead of
@@ -260,7 +308,8 @@ Pro features lives in `apps/server/src/ee/` and `apps/web/src/ee/` under the
 [Bullpane Commercial License](apps/server/src/ee/LICENSE): you can read it,
 modify it and run it for development and testing, but running it in production
 needs a Pro subscription, and builds with the license check removed are not
-allowed. Releases up to 0.3.0 were MIT in full and stay that way.
+allowed. Releases up to 0.3.0 were MIT in full and stay that way. This fork
+is distributed under the same terms as upstream.
 
 Security issues: please see [SECURITY.md](SECURITY.md) rather than opening a
 public issue.
